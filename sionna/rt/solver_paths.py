@@ -216,7 +216,7 @@ class SolverPaths(SolverBase):
     Generation of paths is carried-out for every link, i.e., for every pair of
     source and target.
 
-    The genration of specular paths consists in three steps:
+    The generation of specular paths consists in three steps:
 
     1. A list of candidate paths is generated. A candidate consists in a
     sequence of primitives on which a ray emitted by a source sequentially
@@ -352,7 +352,7 @@ class SolverPaths(SolverBase):
 
 
     def trace_paths(self, max_depth, method, num_samples, los, reflection,
-                 diffraction, scattering, scat_keep_prob, edge_diffraction):
+                 diffraction, scattering, scat_keep_prob, edge_diffraction, refraction=False):
         # pylint: disable=line-too-long
         r"""
         Traces the paths.
@@ -518,7 +518,7 @@ class SolverPaths(SolverBase):
             #     Coordinates of the intersection points.
             output = self._list_candidates_fibonacci(max_depth,
                                         sources, num_samples, los, reflection,
-                                        scattering)
+                                        scattering, refraction=False)
             candidates = output[0]
             los_prim = output[1]
             candidates_scat = output[2]
@@ -635,6 +635,22 @@ class SolverPaths(SolverBase):
         diff_paths_tmp.scat_keep_prob = tf.cast(scat_keep_prob, self._rdtype)
         scat_paths_tmp.num_samples = num_samples
         scat_paths_tmp.scat_keep_prob = tf.cast(scat_keep_prob, self._rdtype)
+
+        ############################################
+        # Refraction paths
+        ############################################
+        refraction_paths = Paths(sources=sources, targets=targets, scene=self._scene,
+                           types=Paths.REFRACTION)
+        if refraction:
+            print('refraction is not implemented yet')
+            output = self._list_candidates_fibonacci(max_depth,
+                                        sources, num_samples, los, reflection,
+                                        scattering, refraction=refraction)
+            candidates = output[0]
+            los_prim = output[1]
+            candidates_scat = output[2]
+            hit_points = output[3]
+
 
         return spec_paths, diff_paths, scat_paths, spec_paths_tmp,\
             diff_paths_tmp, scat_paths_tmp
@@ -1078,7 +1094,7 @@ class SolverPaths(SolverBase):
         return all_candidates, los_candidates
 
     def _list_candidates_fibonacci(self, max_depth, sources, num_samples,
-                                   los, reflection, scattering):
+                                   los, reflection, scattering, refraction=True):
         r"""
         Generate potential candidate paths made of reflections only and the
         LoS. Rays direction are arranged in a Fibonacci lattice on the unit
@@ -1191,6 +1207,7 @@ class SolverPaths(SolverBase):
                 candidates.append(prims_i)
 
                 # Record the hit point
+                # reflection path
                 hit_p = ray.o + si.t*ray.d
                 hit_points.append(hit_p)
 
@@ -1209,6 +1226,9 @@ class SolverPaths(SolverBase):
         else:
             # max_depth == 0
             los_primitives = None
+
+        if refraction:
+            print("candidates point: refraction is not implemented yet")
 
         reflection = reflection and (max_depth > 0) and (len(candidates) > 0)
         scattering = scattering and (max_depth > 0) and (len(candidates) > 0)
@@ -1477,7 +1497,7 @@ class SolverPaths(SolverBase):
                 # Distance between the current intersection point (or sources)
                 # and the plane the triangle is part of.
                 # Note: `dist` is signed to compensate for backfacing normals
-                # whenn needed.
+                # when needed.
                 # [num_sources, num_samples, 1]
                 dist = dot(current, normal, keepdim=True)\
                             - dot(p0, normal, keepdim=True)

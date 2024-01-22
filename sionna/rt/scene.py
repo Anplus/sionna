@@ -420,7 +420,7 @@ class Scene:
     def trace_paths(self, max_depth=3, method="fibonacci", num_samples=int(1e6),
                     los=True, reflection=True, diffraction=False,
                     scattering=False, scat_keep_prob=0.001,
-                    edge_diffraction=False, check_scene=True):
+                    edge_diffraction=False, check_scene=True, refraction=True):
         # pylint: disable=line-too-long
         r"""
         Computes the trajectories of the paths by shooting rays
@@ -540,14 +540,15 @@ class Scene:
                                                diffraction=diffraction,
                                                scattering=scattering,
                                                scat_keep_prob=scat_keep_prob,
-                                               edge_diffraction=edge_diffraction)
+                                               edge_diffraction=edge_diffraction,
+                                               refraction=refraction)
 
         return paths
 
     def compute_fields(self, spec_paths, diff_paths, scat_paths,
                        spec_paths_tmp, diff_paths_tmp, scat_paths_tmp,
                        check_scene=True, scat_random_phases=True,
-                       testing=False):
+                       testing=False, refraction_paths=False):
         r"""compute_fields(self, spec_paths, diff_paths, scat_paths, spec_paths_tmp, diff_paths_tmp, scat_paths_tmp, check_scene=True, scat_random_phases=True)
         Computes the EM fields corresponding to traced paths
 
@@ -644,7 +645,7 @@ class Scene:
                       num_samples=int(1e6), los=True, reflection=True,
                       diffraction=False, scattering=False, scat_keep_prob=0.001,
                       edge_diffraction=False, check_scene=True,
-                      scat_random_phases=True, testing=False):
+                      scat_random_phases=True, testing=False, refraction=False):
         # pylint: disable=line-too-long
         r"""
         Computes propagation paths
@@ -817,7 +818,7 @@ class Scene:
         # Trace the paths
         traced_paths = self.trace_paths(max_depth, method, num_samples, los,
             reflection, diffraction, scattering, scat_keep_prob,
-            edge_diffraction, check_scene)
+            edge_diffraction, check_scene, refraction)
 
         # Compute the fields and merge the paths
         # Check scene is not done twice

@@ -90,6 +90,7 @@ class Paths:
     SPECULAR = 1
     DIFFRACTED = 2
     SCATTERED = 3
+    REFRACTION = 4
 
     def __init__(self,
                  sources,
