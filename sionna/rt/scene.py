@@ -645,7 +645,7 @@ class Scene:
                       num_samples=int(1e6), los=True, reflection=True,
                       diffraction=False, scattering=False, scat_keep_prob=0.001,
                       edge_diffraction=False, check_scene=True,
-                      scat_random_phases=True, testing=False, refraction=False):
+                      scat_random_phases=True, testing=False, refraction=True):
         # pylint: disable=line-too-long
         r"""
         Computes propagation paths

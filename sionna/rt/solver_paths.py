@@ -352,7 +352,7 @@ class SolverPaths(SolverBase):
 
 
     def trace_paths(self, max_depth, method, num_samples, los, reflection,
-                 diffraction, scattering, scat_keep_prob, edge_diffraction, refraction=False):
+                 diffraction, scattering, scat_keep_prob, edge_diffraction, refraction=True):
         # pylint: disable=line-too-long
         r"""
         Traces the paths.
@@ -523,9 +523,20 @@ class SolverPaths(SolverBase):
             los_prim = output[1]
             candidates_scat = output[2]
             hit_points = output[3]
+            hit_points_refraction = output[3]
 
         else:
             raise ValueError(f"Unknown method '{method}'")
+        ##############################################
+        # refraction paths
+        ##############################################
+        if refraction:
+            print("solver: trace path refraction")
+            refraction_paths = Paths(sources=sources, targets=targets, scene=self._scene,
+                           types=Paths.REFRACTION)
+            refraction_paths_tmp = PathsTmpData(sources, targets, self._dtype)
+            print(candidates)
+
 
         ##############################################
         # LoS and Specular paths
@@ -1189,6 +1200,26 @@ class SolverPaths(SolverBase):
                 d=sampled_d,
             )
 
+            if refraction:
+                print("candidates point: refraction is not implemented yet")
+                si = self._mi_scene.ray_intersect(ray, active)
+                active &= si.is_valid()
+
+                # Record which primitives were hit
+                shape_i = dr.gather(mi.Int32, self._shape_indices,
+                                    dr.reinterpret_array_v(mi.UInt32, si.shape),
+                                    active)
+                offsets = dr.gather(mi.Int32, self._prim_offsets, shape_i,
+                                    active)
+                prims_i = dr.select(active, offsets + si.prim_index, -1)
+                candidates.append(prims_i)
+
+                # Record the hit point
+                # refraction path
+                hit_p = ray.o + si.t * ray.d
+                hit_points.append(hit_p)
+                #
+
             for depth in range(max_depth):
 
                 # Intersect ray against the scene to find the next hitted
@@ -1226,9 +1257,6 @@ class SolverPaths(SolverBase):
         else:
             # max_depth == 0
             los_primitives = None
-
-        if refraction:
-            print("candidates point: refraction is not implemented yet")
 
         reflection = reflection and (max_depth > 0) and (len(candidates) > 0)
         scattering = scattering and (max_depth > 0) and (len(candidates) > 0)
