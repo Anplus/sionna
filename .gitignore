@@ -19,3 +19,6 @@ projects/
 nohup.out
 /*.obj
 dist/
+# ignore the .idea folder
+.idea/
+dev.env

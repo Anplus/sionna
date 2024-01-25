@@ -518,25 +518,81 @@ class SolverPaths(SolverBase):
             #     Coordinates of the intersection points.
             output = self._list_candidates_fibonacci(max_depth,
                                         sources, num_samples, los, reflection,
-                                        scattering, refraction=False)
+                                        scattering, refraction=refraction)
             candidates = output[0]
             los_prim = output[1]
             candidates_scat = output[2]
             hit_points = output[3]
-            hit_points_refraction = output[3]
+            candidates_refraction = output[4]
+            hit_points_refraction = output[5]
 
         else:
             raise ValueError(f"Unknown method '{method}'")
         ##############################################
         # refraction paths
+        # TODO: refraction paths generation
         ##############################################
+        refraction_paths = Paths(sources=sources, targets=targets, scene=self._scene,
+                                 types=Paths.REFRACTION)
+        refraction_paths_tmp = PathsTmpData(sources, targets, self._dtype)
         if refraction:
             print("solver: trace path refraction")
-            refraction_paths = Paths(sources=sources, targets=targets, scene=self._scene,
-                           types=Paths.REFRACTION)
-            refraction_paths_tmp = PathsTmpData(sources, targets, self._dtype)
-            print(candidates)
+            refraction_paths.mask = tf.fill([1, 1, 0], True)
+            candidates_refraction_object = tf.squeeze(candidates_refraction)
+            # Number of points
+            num_samples = tf.shape(candidates_refraction_object)
+            p0_index = candidates_refraction_object
+            p0_index = tf.expand_dims(p0_index, axis=1)
+            p0_index = tf.pad(p0_index, [[0, 0], [0, 1]], mode='CONSTANT',
+                              constant_values=0)  # First vertex
+            p0 = tf.gather_nd(self._primitives, p0_index)
+            print(p0)
+            # o1 = tf.expand_dims(candidates_refraction_object, axis=0)
+            # o2 = tf.expand_dims(o1, axis=0)
+            # o3 = tf.expand_dims(o2, axis=0)
+            # refraction_paths.objects = o3
+            # v1 = tf.expand_dims(p0, axis=0)
+            # v2 = tf.expand_dims(v1, axis=0)
+            # v3 = tf.expand_dims(v2, axis=0)
+            # refraction_paths.vertics = v3
+            print('refraction is not implemented yet')
 
+            ## direct ray from source to tx
+            num_sources = num_sources = sources.shape[0]
+            source_i = dr.linspace(self._mi_scalar_t, 0, num_sources,
+                                   num=num_samples, endpoint=False)
+            points = targets-sources
+            sampled_d = self._mi_vec_t(tf.tile(points, [num_sources, 1]))
+            source_i = mi.Int32(source_i)
+            sources_dr = self._mi_tensor_t(sources)
+            ray = mi.Ray3f(
+                o=dr.gather(self._mi_vec_t, sources_dr.array, source_i),
+                d=sampled_d,
+            )
+            mask_t = dr.mask_t(self._mi_scalar_t)
+            active = dr.full(mask_t, True, num_samples)
+            si = self._mi_scene.ray_intersect(ray, active)
+            active &= si.is_valid()
+            # Record which primitives were hit
+            shape_i = dr.gather(mi.Int32, self._shape_indices,
+                                dr.reinterpret_array_v(mi.UInt32, si.shape),
+                                active)
+            offsets = dr.gather(mi.Int32, self._prim_offsets, shape_i,
+                                active)
+            prims_i = dr.select(active, offsets + si.prim_index, -1)
+            # prims to object index and store in the refraction_paths
+            refraction_paths.objects = prims_i
+            # Record the hit point on the refraction path
+            hit_p = ray.o + si.t * ray.d
+            # check the prims to the object id
+            refraction_paths.vertices = hit_p
+            # self._mask = tf.fill([num_targets, num_sources, 0], False)
+            # self._vertices = tf.zeros([0, num_targets, num_sources, 0, 3], rdtype)
+            # self._objects = tf.fill([0, num_targets, num_sources, 0], -1)
+            # expand the refraction_paths.vertices to [0, num_targets, num_sources, 0, 3]
+            # expand the refraction_paths.objects to [0, num_targets, num_sources, 0]
+            refraction_paths.mask = tf.fill([1, 1, 0], True)
+            refraction_paths.vertices = tf.expand_dims(refraction_paths.vertices, axis=0)
 
         ##############################################
         # LoS and Specular paths
@@ -647,27 +703,11 @@ class SolverPaths(SolverBase):
         scat_paths_tmp.num_samples = num_samples
         scat_paths_tmp.scat_keep_prob = tf.cast(scat_keep_prob, self._rdtype)
 
-        ############################################
-        # Refraction paths
-        ############################################
-        refraction_paths = Paths(sources=sources, targets=targets, scene=self._scene,
-                           types=Paths.REFRACTION)
-        if refraction:
-            print('refraction is not implemented yet')
-            output = self._list_candidates_fibonacci(max_depth,
-                                        sources, num_samples, los, reflection,
-                                        scattering, refraction=refraction)
-            candidates = output[0]
-            los_prim = output[1]
-            candidates_scat = output[2]
-            hit_points = output[3]
-
-
         return spec_paths, diff_paths, scat_paths, spec_paths_tmp,\
-            diff_paths_tmp, scat_paths_tmp
+            diff_paths_tmp, scat_paths_tmp, refraction_paths, refraction_paths_tmp
 
     def compute_fields(self, spec_paths, diff_paths, scat_paths, spec_paths_tmp,
-        diff_paths_tmp, scat_paths_tmp, scat_random_phases, testing):
+        diff_paths_tmp, scat_paths_tmp, scat_random_phases, testing, refraction_paths, refraction_paths_tmp):
         r"""
         Computes the EM fields for a set of traced paths.
 
@@ -710,7 +750,7 @@ class SolverPaths(SolverBase):
             Coordinates of the targets
 
         list : Paths as a list
-            The computed paths as a dictionnary of tensors, i.e., the output of
+            The computed paths as a dictionary of tensors, i.e., the output of
             `Paths.to_dict()`.
             Returning the paths as a list of tensors is required to enable
             the execution of this function in graph mode.
@@ -767,6 +807,17 @@ class SolverPaths(SolverBase):
         alpha_r = object_properties[3]
         alpha_i = object_properties[4]
         lambda_ = object_properties[5]
+        ##############################################
+        # TODO: extract scene thick propoertis
+        ##############################################
+
+
+        ##############################################
+        # Refraction Path
+        # TODO: refraction path merge
+        #############################################
+        if refraction_paths.objects.shape[3] > 0:
+            all_paths = all_paths.merge(refraction_paths)
 
         ##############################################
         # LoS and Specular paths
@@ -1173,9 +1224,10 @@ class SolverPaths(SolverBase):
 
         # List of candidates
         candidates = []
-
+        candidates_refraction = []
         # Hit points
         hit_points = []
+        hit_points_refraction = []
 
         # Is the scene empty?
         is_empty = dr.shape(self._shape_indices)[0] == 0
@@ -1199,12 +1251,11 @@ class SolverPaths(SolverBase):
                 o=dr.gather(self._mi_vec_t, sources_dr.array, source_i),
                 d=sampled_d,
             )
-
+            # TODO: refraction hitting points
             if refraction:
                 print("candidates point: refraction is not implemented yet")
                 si = self._mi_scene.ray_intersect(ray, active)
                 active &= si.is_valid()
-
                 # Record which primitives were hit
                 shape_i = dr.gather(mi.Int32, self._shape_indices,
                                     dr.reinterpret_array_v(mi.UInt32, si.shape),
@@ -1212,13 +1263,13 @@ class SolverPaths(SolverBase):
                 offsets = dr.gather(mi.Int32, self._prim_offsets, shape_i,
                                     active)
                 prims_i = dr.select(active, offsets + si.prim_index, -1)
-                candidates.append(prims_i)
+                candidates_refraction.append(prims_i)
 
                 # Record the hit point
                 # refraction path
                 hit_p = ray.o + si.t * ray.d
-                hit_points.append(hit_p)
-                #
+                hit_points_refraction.append(hit_p)
+
 
             for depth in range(max_depth):
 
@@ -1250,6 +1301,7 @@ class SolverPaths(SolverBase):
         # [num_los_primitives]
         if len(candidates) > 0:
             # max_depth > 0 or empty scene
+            # depth = 1
             los_primitives = tf.reshape(tf.cast(candidates[0], tf.int32), [-1])
             los_primitives,_ = tf.unique(los_primitives)
             los_primitives = tf.gather(los_primitives,
@@ -1260,6 +1312,21 @@ class SolverPaths(SolverBase):
 
         reflection = reflection and (max_depth > 0) and (len(candidates) > 0)
         scattering = scattering and (max_depth > 0) and (len(candidates) > 0)
+
+        if refraction:
+            candidates_refraction = tf.stack([mi_to_tf_tensor(r, tf.int32)
+                                   for r in candidates_refraction], axis=0)
+            # remove
+            candidates_refraction, _ = tf.raw_ops.UniqueV2(
+                x=candidates_refraction,
+                axis=[1]
+            )
+            is_nlos = tf.logical_not(tf.reduce_all(candidates_refraction == -1,
+                                                   axis=0))
+            is_nlos_ind = tf.where(is_nlos)[:, 0]
+            candidates_refraction = tf.gather(candidates_refraction, is_nlos_ind, axis=1)
+
+
 
         if scattering or reflection:
             # Stack all found interactions along the depth dimension
@@ -1389,7 +1456,7 @@ class SolverPaths(SolverBase):
                 axis=[1]
             )
 
-        return candidates_ref, los_primitives, candidates_scat, hit_points
+        return candidates_ref, los_primitives, candidates_scat, hit_points, candidates_refraction, hit_points_refraction
 
     ##################################################################
     # Methods used for computing the specular paths

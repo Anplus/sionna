@@ -546,9 +546,9 @@ class Scene:
         return paths
 
     def compute_fields(self, spec_paths, diff_paths, scat_paths,
-                       spec_paths_tmp, diff_paths_tmp, scat_paths_tmp,
+                       spec_paths_tmp, diff_paths_tmp, scat_paths_tmp, refraction_paths, refraction_paths_tmp,
                        check_scene=True, scat_random_phases=True,
-                       testing=False, refraction_paths=False):
+                       testing=False):
         r"""compute_fields(self, spec_paths, diff_paths, scat_paths, spec_paths_tmp, diff_paths_tmp, scat_paths_tmp, check_scene=True, scat_random_phases=True)
         Computes the EM fields corresponding to traced paths
 
@@ -617,7 +617,7 @@ class Scene:
         # Compute the fields and merge the paths
         output = self._solver_paths.compute_fields(spec_paths, diff_paths,
             scat_paths, spec_paths_tmp, diff_paths_tmp, scat_paths_tmp,
-            scat_random_phases, testing)
+            scat_random_phases, testing, refraction_paths, refraction_paths_tmp)
         sources, targets, paths_as_dict = output[:3]
         paths = Paths(sources, targets, self)
         paths.from_dict(paths_as_dict)
