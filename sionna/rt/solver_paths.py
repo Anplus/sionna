@@ -547,14 +547,6 @@ class SolverPaths(SolverBase):
                               constant_values=0)  # First vertex
             p0 = tf.gather_nd(self._primitives, p0_index)
             print(p0)
-            # o1 = tf.expand_dims(candidates_refraction_object, axis=0)
-            # o2 = tf.expand_dims(o1, axis=0)
-            # o3 = tf.expand_dims(o2, axis=0)
-            # refraction_paths.objects = o3
-            # v1 = tf.expand_dims(p0, axis=0)
-            # v2 = tf.expand_dims(v1, axis=0)
-            # v3 = tf.expand_dims(v2, axis=0)
-            # refraction_paths.vertics = v3
             print('refraction is not implemented yet')
 
             ## direct ray from source to tx
@@ -807,17 +799,19 @@ class SolverPaths(SolverBase):
         alpha_r = object_properties[3]
         alpha_i = object_properties[4]
         lambda_ = object_properties[5]
+        
         ##############################################
-        # TODO: extract scene thick propoertis
+        # TODO: extract scene thick propertis
         ##############################################
-
+        thickness_layers = object_properties[6]
+        complex_relative_permittivity_layer = object_properties[7]
 
         ##############################################
         # Refraction Path
         # TODO: refraction path merge
         #############################################
-        if refraction_paths.objects.shape[3] > 0:
-            all_paths = all_paths.merge(refraction_paths)
+        # if refraction_paths.objects.shape[3] > 0:
+        #     all_paths = all_paths.merge(refraction_paths)
 
         ##############################################
         # LoS and Specular paths
@@ -2366,6 +2360,26 @@ class SolverPaths(SolverBase):
         spec_paths_tmp.normals = valid_normals
 
     ### Transition matrices
+    #######################
+    # TODO: Add the computation of the transition matrices for the refraction and reflection for layers
+    #######################
+    def _refraction_transition_matrices(self, relative_permittivity, thickness, paths, paths_tmp):
+        # pylint: disable=line-too-long
+        """
+        Compute the transition matrices, delays, angles of departures, and
+        
+        """
+        return []
+
+
+    def _reflection_transition_matrices(self, relative_permittivity, thickness, paths, paths_tmp):
+        # pylint: disable=line-too-long
+        """
+        Compute the transition matrices, delays, angles of departures, and
+        
+        """
+        return []
+    
 
     def _spec_transition_matrices(self, relative_permittivity,
                                   scattering_coefficient,

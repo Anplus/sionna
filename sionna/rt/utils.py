@@ -8,7 +8,7 @@ Ray tracer utilities
 
 import tensorflow as tf
 import drjit as dr
-
+import numpy as np
 from sionna.utils import expand_to_rank
 from sionna import PI
 
@@ -481,6 +481,67 @@ def compute_field_unit_vectors(k_i, k_r, n, epsilon, return_e_r=True):
         e_r_s = e_i_s
         e_r_p,_ = normalize(cross(e_r_s, k_r))
         return e_i_s, e_i_p, e_r_s, e_r_p
+
+
+######################################################################
+# TODO: layers Fresnel coefficients
+######################################################################
+def layer_reflection_coefficient(complex_relative_permittivity_layer, thickness_layer, cos_theta):
+    """
+    Compute layer reflection coefficients
+
+    Input
+    ------
+    complex_relative_permittivity_layer : Any shape, tf.complex
+        Complex relative permittivity
+
+    thickness_layer: Any shape, tf.float
+        Thickness of the layer
+
+    cos_theta : Same as ``eta``, tf.float
+        Cosine of the incident angle
+
+    Output
+    -------
+    r_te : Same as input, tf.complex
+        Fresnel reflection coefficient for S direction
+
+    r_tm : Same as input, tf.complex
+        Fresnel reflection coefficient for P direction
+
+    t_te : Same as input, tf.complex
+        Fresnel transmission coefficient for S direction
+    
+    t_tm : Same as input, tf.complex
+        Fresnel transmission coefficient for P direction
+    """
+
+    # Constants
+    speed_of_light = 3e8
+
+    # Calculate wavelength
+    frequency = tf.divide(speed_of_light, complex_relative_permittivity_layer)
+    wavelength = tf.divide(speed_of_light, frequency)
+
+    # Calculate the wave vector component in the slab
+    q = 2 * tf.constant(np.pi, dtype=tf.float64) * thickness_layer / wavelength * tf.sqrt(
+        complex_relative_permittivity_layer - tf.square(tf.sin(tf.acos(cos_theta))))
+
+    # Reflection coefficients for TE and TM polarization (Fresnel coefficients)
+    sqrt_term = tf.sqrt(complex_relative_permittivity_layer - tf.square(tf.sin(tf.acos(cos_theta))))
+    ReTE = (cos_theta - sqrt_term) / (cos_theta + sqrt_term)
+    ReTM = (complex_relative_permittivity_layer * cos_theta - sqrt_term) / (
+                complex_relative_permittivity_layer * cos_theta + sqrt_term)
+
+    # Slab model reflection and transmission coefficients
+    exp_term = tf.exp(-1j * 2 * q)
+    r_te = ReTE * (1 - exp_term) / (1 - tf.square(ReTE) * exp_term)
+    r_tm = ReTM * (1 - exp_term) / (1 - tf.square(ReTM) * exp_term)
+    t_te = (1 - tf.square(ReTE)) * tf.exp(-1j * q) / (1 - tf.square(ReTE) * exp_term)
+    t_tm = (1 - tf.square(ReTM)) * tf.exp(-1j * q) / (1 - tf.square(ReTM) * exp_term)
+
+    return r_te, r_tm, t_te, t_tm
+
 
 def reflection_coefficient(eta, cos_theta):
     """

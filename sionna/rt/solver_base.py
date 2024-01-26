@@ -279,6 +279,15 @@ class SolverBase:
             Tensor containing the cross-polarization discrimination
             coefficients of all shapes
 
+        thickness_layer : [num_shape], tf.float
+            Tensor containing the thickness of all shapes
+
+        relative_permittivity_layer : [num_shape], tf.complex
+            Tensor containing the complex relative permittivities of all shapes
+        
+        conductivity_layer : [num_shape], tf.float
+            Tensor containing the conductivity of all shapes
+
         alpha_r : [num_shape], tf.float
             Tensor containing the alpha_r scattering parameters of all shapes
 
@@ -298,15 +307,23 @@ class SolverBase:
         # If a callable is set to obtain scattering patterns, then there
         # is no need to build the tensors for scattering properties
         sp_callable_set = self._scene.scattering_pattern_callable is not None
-
+        ##########################################
+        # TODO: add relative_permittivity_layer and thickness_layer
+        ##########################################
         if rm_callable_set:
             relative_permittivity = tf.zeros([0], self._dtype)
             scattering_coefficient = tf.zeros([0], self._rdtype)
             xpd_coefficient = tf.zeros([0], self._rdtype)
+            relative_permittivity_layer = tf.zeros([0], self._dtype)
+            thickness_layer = tf.zeros([0], self._rdtype)
+            conductivity_layer = tf.zeros([0], self._rdtype)
         else:
             relative_permittivity = tf.zeros([num_shapes], self._dtype)
             scattering_coefficient = tf.zeros([num_shapes], self._rdtype)
             xpd_coefficient = tf.zeros([num_shapes], self._rdtype)
+            relative_permittivity_layer = tf.zeros([num_shapes], self._dtype)
+            thickness_layer = tf.zeros([num_shapes], self._rdtype)
+            conductivity_layer = tf.zeros([num_shapes], self._rdtype)
 
         if sp_callable_set:
             alpha_r = tf.zeros([0], tf.int32)
@@ -331,6 +348,24 @@ class SolverBase:
                         tf.reshape(using_objects, [-1,1]),
                         tf.fill([num_using_objects],
                                 rm.complex_relative_permittivity))
+
+                    relative_permittivity_layer = tf.tensor_scatter_nd_update(
+                        relative_permittivity_layer,
+                        tf.reshape(using_objects, [-1, 1]),
+                        tf.fill([num_using_objects],
+                                rm.complex_relative_permittivity_layer))
+
+                    thickness_layer = tf.tensor_scatter_nd_update(
+                        thickness_layer,
+                        tf.reshape(using_objects, [-1, 1]),
+                        tf.fill([num_using_objects],
+                                rm.thickness_layer))
+                    
+                    # conductivity_layer = tf.tensor_scatter_nd_update(
+                    #     conductivity_layer,
+                    #     tf.reshape(using_objects, [-1, 1]),
+                    #     tf.fill([num_using_objects],
+                    #             rm.conductivity_layer))
 
                     scattering_coefficient = tf.tensor_scatter_nd_update(
                         scattering_coefficient,
@@ -366,7 +401,9 @@ class SolverBase:
                xpd_coefficient,
                alpha_r,
                alpha_i,
-               lambda_)
+               lambda_,
+               relative_permittivity_layer,
+               thickness_layer)
 
     def _test_obstruction(self, o, d, maxt):
         r"""
