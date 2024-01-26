@@ -105,6 +105,9 @@ class RadioMaterial:
                  xpd_coefficient=0.0,
                  scattering_pattern=None,
                  frequency_update_callback=None,
+                 thickness_layer=0.1,
+                 relative_permittivity_layer=1.0,
+                 conductivity_layer=0.0,
                  dtype=tf.complex64):
 
         if not isinstance(name, str):
@@ -124,9 +127,16 @@ class RadioMaterial:
         self.scattering_coefficient = scattering_coefficient
         self.xpd_coefficient = xpd_coefficient
 
+        ###############################
+        #TODO: init thickness, relative_permittivity_layer, conductivity_layer
+        ###############################
+        self.thickness_layer = thickness_layer
+
         if frequency_update_callback is None:
             self.relative_permittivity = relative_permittivity
             self.conductivity = conductivity
+            self.relative_permittivity_layer = relative_permittivity_layer
+            self.conductivity_layer = conductivity_layer
 
         # Save the callback for when the frequency is updated
         # or if the RadioMaterial is added to a scene
@@ -218,6 +228,69 @@ class RadioMaterial:
         else:
             self._scattering_coefficient = tf.cast(v, self._rdtype)
 
+    ###############################
+    # TODO: add thickness_layer
+    ###############################
+    @property
+    def thickness_layer(self):
+        r"""
+        tf.float: Get/set the thickness_layer of the material [m]
+        """
+        return self._thickness_layer
+
+    @thickness_layer.setter
+    def thickness_layer(self, v):
+        if isinstance(v, tf.Variable):
+            if v.dtype != self._rdtype:
+                msg = f"`thickness_layer` must have dtype={self._rdtype}"
+                raise TypeError(msg)
+            else:
+                self._thickness_layer = v
+        else:
+            self._thickness_layer = tf.cast(v, self._rdtype)
+
+    ###############################
+    # TODO: add relative_permittivity_layer
+    ###############################
+    @property
+    def relative_permittivity_layer(self):
+        r"""
+        tf.float: Get/set the relative permittivity of the layer
+        """
+        return self._relative_permittivity_layer
+    
+    @relative_permittivity_layer.setter
+    def relative_permittivity_layer(self, v):
+        if isinstance(v, tf.Variable):
+            if v.dtype != self._rdtype:
+                msg = f"`relative_permittivity_layer` must have dtype={self._rdtype}"
+                raise TypeError(msg)
+            else:
+                self._relative_permittivity_layer = v
+        else:
+            self._relative_permittivity_layer = tf.cast(v, self._rdtype)
+    ###############################
+    #TODO: add conductivity_layer
+    ###############################
+    @property
+    def conductivity_layer(self):
+        r"""
+        tf.float: Get/set the conductivity of the layer
+        """
+        return self._conductivity_layer
+    
+    @conductivity_layer.setter
+    def conductivity_layer(self, v):
+        if isinstance(v, tf.Variable):
+            if v.dtype != self._rdtype:
+                msg = f"`conductivity_layer` must have dtype={self._rdtype}"
+                raise TypeError(msg)
+            else:
+                self._conductivity_layer = v
+        else:
+            self._conductivity_layer = tf.cast(v, self._rdtype)
+            
+
     @property
     def xpd_coefficient(self):
         r"""
@@ -264,6 +337,22 @@ class RadioMaterial:
         return tf.complex(eta_prime,
                           -tf.math.divide_no_nan(sigma, epsilon_0*omega))
 
+    #####################################
+    # TODO: compute complex_relative_permittivity_layer
+    #####################################
+    @property
+    def complex_relative_permittivity_layer(self):
+        r"""
+        tf.complex (read-only) : Complex relative permittivity of the layer
+        """
+        epsilon_0 = DIELECTRIC_PERMITTIVITY_VACUUM
+        eta_prime = self.relative_permittivity_layer
+        sigma = self.conductivity_layer
+        frequency = scene.Scene().frequency
+        omega = tf.cast(2.*PI*frequency, self._rdtype)
+        return tf.complex(eta_prime,
+                          -tf.math.divide_no_nan(sigma, epsilon_0*omega))
+    
     @property
     def frequency_update_callback(self):
         """
@@ -324,6 +413,12 @@ class RadioMaterial:
         relative_permittivity, conductivity = parameters
         self.relative_permittivity = relative_permittivity
         self.conductivity = conductivity
+        ###############################
+        # TODO: update relative_permittivity_layer, conductivity_layer when frequency is updated
+        # could update using ITU exponential model
+        ###############################
+        self.relative_permittivity_layer = relative_permittivity
+        self.conductivity_layer = conductivity
 
     def add_object_using(self, object_id):
         """
@@ -368,3 +463,7 @@ class RadioMaterial:
         self.xpd_coefficient = rm.xpd_coefficient
         self.scattering_pattern = rm.scattering_pattern
         self.frequency_update_callback = rm.frequency_update_callback
+        self.thickness_layer = rm.thickness_layer
+        self.relative_permittivity_layer = rm.relative_permittivity_layer
+        self.conductivity_layer = rm.conductivity_layer
+        
