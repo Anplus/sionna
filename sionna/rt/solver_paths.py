@@ -19,6 +19,7 @@ from .utils import dot, phi_hat, theta_hat, theta_phi_from_unit_vec,\
     normalize, moller_trumbore, component_transform, mi_to_tf_tensor,\
         compute_field_unit_vectors, reflection_coefficient, fibonacci_lattice,\
             cot, cross, sign, rotation_matrix, acos_diff
+from .utils import layer_reflection_coefficient
 from .solver_base import SolverBase
 from .scattering_pattern import ScatteringPattern
 
@@ -488,7 +489,8 @@ class SolverPaths(SolverBase):
         ##############################################
         # Generate candidate paths
         ##############################################
-
+        candidates_refraction = []
+        hit_points_refraction = []
         # Candidate paths are generated according to the specified `method`.
         if method == 'exhaustive':
             if scattering:
@@ -523,8 +525,8 @@ class SolverPaths(SolverBase):
             los_prim = output[1]
             candidates_scat = output[2]
             hit_points = output[3]
-            candidates_refraction = output[4]
-            hit_points_refraction = output[5]
+            candidates_refraction = output[4] # only record the first hit [1, num_paths]
+            hit_points_refraction = output[5] # [1, num_sources,  num_paths]
 
         else:
             raise ValueError(f"Unknown method '{method}'")
@@ -537,54 +539,24 @@ class SolverPaths(SolverBase):
         refraction_paths_tmp = PathsTmpData(sources, targets, self._dtype)
         if refraction:
             print("solver: trace path refraction")
-            refraction_paths.mask = tf.fill([1, 1, 0], True)
-            candidates_refraction_object = tf.squeeze(candidates_refraction)
-            # Number of points
-            num_samples = tf.shape(candidates_refraction_object)
-            p0_index = candidates_refraction_object
-            p0_index = tf.expand_dims(p0_index, axis=1)
-            p0_index = tf.pad(p0_index, [[0, 0], [0, 1]], mode='CONSTANT',
-                              constant_values=0)  # First vertex
-            p0 = tf.gather_nd(self._primitives, p0_index)
-            print(p0)
-            print('refraction is not implemented yet')
+            # generate the first refraction paths
+            refraction_paths, refraction_paths_tmp = self._refraction_first(targets, sources,
+                                                                            candidates_refraction, hit_points_refraction)
+            # start launching the next event refraction and reflection paths
+            # refraction_paths, refraction_paths_tmp = self._compute_directions_distances_delays_angles(refraction_paths,
+            #                                                                                        refraction_paths_tmp, True)
+            num_sources = refraction_paths.sources.shape[0]
+            num_targets = refraction_paths.targets.shape[0]
+            max_depth = tf.shape(refraction_paths.objects)[0]
+            num_path = tf.shape(refraction_paths.objects)[3]
+            refraction_paths.mask = tf.fill([num_sources,num_targets,num_path], True)
+            refraction_paths.targets_sources_mask = tf.fill([num_sources, num_targets, num_path], True)
+            refraction_paths.tau = tf.zeros([num_sources,num_targets,num_path], dtype=tf.dtypes.float32)
+            refraction_paths.theta_r = tf.ones([num_sources,num_targets,num_path], dtype=tf.dtypes.float32)
 
-            ## direct ray from source to tx
-            num_sources = num_sources = sources.shape[0]
-            source_i = dr.linspace(self._mi_scalar_t, 0, num_sources,
-                                   num=num_samples, endpoint=False)
-            points = targets-sources
-            sampled_d = self._mi_vec_t(tf.tile(points, [num_sources, 1]))
-            source_i = mi.Int32(source_i)
-            sources_dr = self._mi_tensor_t(sources)
-            ray = mi.Ray3f(
-                o=dr.gather(self._mi_vec_t, sources_dr.array, source_i),
-                d=sampled_d,
-            )
-            mask_t = dr.mask_t(self._mi_scalar_t)
-            active = dr.full(mask_t, True, num_samples)
-            si = self._mi_scene.ray_intersect(ray, active)
-            active &= si.is_valid()
-            # Record which primitives were hit
-            shape_i = dr.gather(mi.Int32, self._shape_indices,
-                                dr.reinterpret_array_v(mi.UInt32, si.shape),
-                                active)
-            offsets = dr.gather(mi.Int32, self._prim_offsets, shape_i,
-                                active)
-            prims_i = dr.select(active, offsets + si.prim_index, -1)
-            # prims to object index and store in the refraction_paths
-            refraction_paths.objects = prims_i
-            # Record the hit point on the refraction path
-            hit_p = ray.o + si.t * ray.d
-            # check the prims to the object id
-            refraction_paths.vertices = hit_p
-            # self._mask = tf.fill([num_targets, num_sources, 0], False)
-            # self._vertices = tf.zeros([0, num_targets, num_sources, 0, 3], rdtype)
-            # self._objects = tf.fill([0, num_targets, num_sources, 0], -1)
-            # expand the refraction_paths.vertices to [0, num_targets, num_sources, 0, 3]
-            # expand the refraction_paths.objects to [0, num_targets, num_sources, 0]
-            refraction_paths.mask = tf.fill([1, 1, 0], True)
-            refraction_paths.vertices = tf.expand_dims(refraction_paths.vertices, axis=0)
+
+
+
 
         ##############################################
         # LoS and Specular paths
@@ -801,7 +773,7 @@ class SolverPaths(SolverBase):
         lambda_ = object_properties[5]
         
         ##############################################
-        # TODO: extract scene thick propertis
+        # TODO: extract scene thickness properties
         ##############################################
         thickness_layers = object_properties[6]
         complex_relative_permittivity_layer = object_properties[7]
@@ -810,9 +782,9 @@ class SolverPaths(SolverBase):
         # Refraction Path
         # TODO: refraction path merge
         #############################################
-        # if refraction_paths.objects.shape[3] > 0:
-        #     all_paths = all_paths.merge(refraction_paths)
-
+        if refraction_paths.objects.shape[3] > 0:
+            all_paths = all_paths.merge(refraction_paths)
+            # return all_paths.sources, all_paths.targets, all_paths.to_dict()
         ##############################################
         # LoS and Specular paths
         ##############################################
@@ -906,6 +878,7 @@ class SolverPaths(SolverBase):
         # antenna elements were generated and reshaping is needed.
         # Otherwise, expand with the antenna dimensions.
         # [num_targets, num_sources, max_num_paths]
+        # mask: True for valid path
         all_paths.targets_sources_mask = all_paths.mask
         if self._scene.synthetic_array:
             # [num_rx, num_tx, 2, 2]
@@ -933,6 +906,9 @@ class SolverPaths(SolverBase):
             all_paths_tmp.k_tx = tf.reshape(all_paths_tmp.k_tx, batch_dims+[3])
             all_paths_tmp.k_rx = tf.reshape(all_paths_tmp.k_rx, batch_dims+[3])
 
+        DEBUG = True
+        if DEBUG:
+            return sources, targets, all_paths.to_dict()
         ####################################################
         # Compute the channel coefficients
         ####################################################
@@ -1230,17 +1206,25 @@ class SolverPaths(SolverBase):
         if not is_empty:
 
             # Keep track of which paths are still active
+            # [num_samples = num_sources * samples_per_source]
             active = dr.full(mask_t, True, num_samples)
 
             # Initial ray: Arranged in a Fibonacci lattice on the unit
             # sphere.
             # [samples_per_source, 3]
             lattice = fibonacci_lattice(samples_per_source, self._rdtype)
+            # linspace(dtype, start, stop, num=1, endpoint=True)
+            # source index [num_samples]
+            # source index for all rays
             source_i = dr.linspace(self._mi_scalar_t, 0, num_sources,
                                    num=num_samples, endpoint=False)
-            sampled_d = self._mi_vec_t(tf.tile(lattice, [num_sources, 1]))
             source_i = mi.Int32(source_i)
+            # copy lattice direction num_source times -> Vector3f
+            # [samples_per_source, 3]
+            sampled_d = self._mi_vec_t(tf.tile(lattice, [num_sources, 1]))
+            # sources positions : [num_sources, 3] -> tensor
             sources_dr = self._mi_tensor_t(sources)
+            # num_samples rays
             ray = mi.Ray3f(
                 o=dr.gather(self._mi_vec_t, sources_dr.array, source_i),
                 d=sampled_d,
@@ -1248,22 +1232,88 @@ class SolverPaths(SolverBase):
             # TODO: refraction hitting points
             if refraction:
                 print("candidates point: refraction is not implemented yet")
+                # ray intersect return SurfaceInteraction structure
                 si = self._mi_scene.ray_intersect(ray, active)
-                active &= si.is_valid()
+                active &= si.is_valid() # num_samples
                 # Record which primitives were hit
+                # si.shape stores the shape (object) were hit
+                # [num_samples]
                 shape_i = dr.gather(mi.Int32, self._shape_indices,
                                     dr.reinterpret_array_v(mi.UInt32, si.shape),
                                     active)
+                # from shape (object) to prim
                 offsets = dr.gather(mi.Int32, self._prim_offsets, shape_i,
                                     active)
+                # [num_samples]
+                # select(condlist = active, choicelist = prim, default=-1)
                 prims_i = dr.select(active, offsets + si.prim_index, -1)
                 candidates_refraction.append(prims_i)
 
                 # Record the hit point
                 # refraction path
+                # Point3f [num_samples]
                 hit_p = ray.o + si.t * ray.d
                 hit_points_refraction.append(hit_p)
 
+                # TODO: refraction hit points filtering
+                # add one dimension (num_depth = 1) to candidates_refraction 
+                candidates_refraction = tf.stack([mi_to_tf_tensor(r, tf.int32)
+                                   for r in candidates_refraction], axis=0)
+                candidates_refraction = tf.reshape(candidates_refraction,
+                                [1, num_sources, samples_per_source])
+                # add one dimension (num_depth = 1) to hit_points_refraction
+                hit_points_refraction = tf.stack([mi_to_tf_tensor(r, self._rdtype)
+                                   for r in hit_points_refraction], axis=0)
+                hit_points_refraction = tf.reshape(hit_points_refraction,
+                        [1, num_sources, samples_per_source, 3])
+                # [max_depth, num_sources, samples_per_source]
+
+                # remove
+                # candidates_refraction, _ = tf.raw_ops.UniqueV2(
+                #     x=candidates_refraction,
+                #     axis=[1]
+                # )
+                depth_refraction = 1
+                # Flag indicating no hits
+                # [depth = 1, num_sources, samples_per_source]
+                no_hit = tf.equal(candidates_refraction, -1)
+                # [depth = 1, num_sources, samples_per_source, 3]
+                hit_points_refraction = hit_points_refraction[:depth_refraction]
+                # [depth = 1, num_sources, samples_per_source]
+                candidates_refraction = candidates_refraction[:depth_refraction]
+                # [depth = 1, num_sources, samples_per_source]
+                no_hit = no_hit[:depth_refraction]
+                # Remove useless paths
+                # [samples_per_source]
+                useful_samples = tf.logical_not(tf.reduce_all(no_hit, axis=(0,1)))
+                useful_samples_index = tf.where(useful_samples)[:,0]
+                # [depth = 1, num_sources, num_paths_per_source, 3]
+                hit_points_refraction = tf.gather(hit_points_refraction, useful_samples_index, axis=2)
+                # [depth = 1, num_sources, num_paths_per_source]
+                candidates_refraction = tf.gather(candidates_refraction, useful_samples_index,
+                                            axis=2)
+                # [depth = 1, num_sources, num_paths_per_source]
+                no_hit = tf.gather(no_hit, useful_samples_index, axis=2)
+
+                # Zero the hit masked points
+                # [depth = 1, num_sources, num_paths, 3]
+                hit_points_refraction = tf.where(tf.expand_dims(no_hit, axis=-1),
+                                    tf.zeros_like(hit_points_refraction),
+                                    hit_points_refraction)
+            else:
+                # No hit points
+                candidates_refraction = tf.fill([0, num_sources, 1, 3],
+                                 tf.cast(0., self._rdtype))
+                candidates_refraction = tf.fill([0, num_sources, 1], False)
+
+            # save hit_points_refraction into csv file
+            # [depth = 1, num_sources, num_paths, 3]
+            # import csv
+            # with open('hit_points_refraction.csv', 'w') as f:
+            #     writer = csv.writer(f)
+            #     for i in range(hit_points_refraction.shape[1]):
+            #         for j in range(hit_points_refraction.shape[2]):
+            #             writer.writerow(hit_points_refraction[0,i,j,:].numpy())
 
             for depth in range(max_depth):
 
@@ -1306,22 +1356,6 @@ class SolverPaths(SolverBase):
 
         reflection = reflection and (max_depth > 0) and (len(candidates) > 0)
         scattering = scattering and (max_depth > 0) and (len(candidates) > 0)
-
-        if refraction:
-            candidates_refraction = tf.stack([mi_to_tf_tensor(r, tf.int32)
-                                   for r in candidates_refraction], axis=0)
-            # remove
-            candidates_refraction, _ = tf.raw_ops.UniqueV2(
-                x=candidates_refraction,
-                axis=[1]
-            )
-            is_nlos = tf.logical_not(tf.reduce_all(candidates_refraction == -1,
-                                                   axis=0))
-            is_nlos_ind = tf.where(is_nlos)[:, 0]
-            candidates_refraction = tf.gather(candidates_refraction, is_nlos_ind, axis=1)
-
-
-
         if scattering or reflection:
             # Stack all found interactions along the depth dimension
             # [max_depth, num_samples]
@@ -2380,6 +2414,121 @@ class SolverPaths(SolverBase):
         """
         return []
     
+    ########################
+    # TODO: refraction transition matrices
+    ########################
+    def _refraction_transition_matrices(self, complex_relative_permittivity_layer,
+                                            thickness_layer, paths, paths_tmp):
+        # pylint: disable=line-too-long
+        """
+        Compute the transition matrices, delays, angles of departures, and
+        angles of arrivals, of paths from a set of valid refraction paths and
+        the EM properties of the materials.
+
+        Input:
+        ------
+        complex_relative_permittivity_layer : [num_shape, layer], tf.complex
+            Tensor containing the complex relative permittivity of all shapes
+            for all layers
+        thickness_layer : [num_shape, layer], tf.float
+            Tensor containing the thickness of all shapes for all layers
+        paths : :class:`~sionna.rt.Paths`
+            Paths to update
+        paths_tmp : :class:`~sionna.rt.PathsTmpData`
+            Addtional quantities required for paths computation
+        
+        Output:
+        -------
+        mat_t : [num_targets, num_sources, max_num_paths, 2, 2], tf.complex
+                refraction transition matrix for every path.
+        """
+        vertices = paths.vertices #[max_depth, num_targets, num_sources, max_num_paths, 3]
+        targets = paths.targets #[num_targets, 3]
+        sources = paths.sources #[num_sources, 3]
+        objects = paths.objects #[max_depth, num_targets, num_sources, max_num_paths]
+        theta_t = paths.theta_t #[num_targets, num_sources, max_num_paths]
+        phi_t = paths.phi_t #[num_targets, num_sources, max_num_paths]
+        theta_r = paths.theta_r #[num_targets, num_sources, max_num_paths]
+        phi_r = paths.phi_r #[num_targets, num_sources, max_num_paths]
+        normals = paths_tmp.normals #[max_depth, num_targets, num_sources, max_num_paths, 3]
+        k_i = paths_tmp.k_i #[max_depth, num_targets, num_sources, max_num_paths, 3]
+        k_r = paths_tmp.k_r #[max_depth, num_targets, num_sources, max_num_paths, 3]
+        # [num_targets, num_sources, max_num_paths]
+        # for path loss computation
+        total_distance = paths_tmp.total_distance
+        # Maximum depth
+        max_depth = tf.shape(vertices)[0]
+        # Number of targets
+        num_targets = tf.shape(targets)[0]
+        # Number of sources
+        num_sources = tf.shape(sources)[0]
+        # Maximum number of paths
+        max_num_paths = tf.shape(objects)[3]
+        # Flag that indicates if a ray is valid
+        valid_ray = tf.not_equal(objects, -1) # [max_depth, num_targets, num_sources, max_num_paths]
+        # Pad to enable detection of the last valid reflection or refraction
+        valid_ray = tf.pad(valid_ray, [[0,1], [0,0], [0,0], [0,0]], constant_values=False) # [max_depth+1, num_targets, num_sources, max_num_paths]
+        # Relative perimittivities.
+        # If a callable is defined to compute the radio material properties,
+        # it is invoked. Otherwise, the radio materials of objects are used.
+        rm_callable = self._scene.radio_material_callable
+        if rm_callable is None:
+            # On CPU, indexing with -1 does not work. Hence we replace -1 by 0.
+            # This makes no difference on the resulting paths as such paths
+            # are not flagged as active.
+            # [max_depth, num_targets, num_sources, max_num_paths]
+            valid_object_idx = tf.where(objects == -1, 0, objects)
+            if tf.shape(complex_relative_permittivity_layer)[0] == 0:
+                # if no material is defined, we assume free space
+                # [max_depth, num_targets, num_sources, max_num_paths]
+                etas = tf.zeros_like(valid_object_idx, dtype=self._dtype)
+                scattering_coefficient = tf.zeros_like(valid_object_idx,
+                                                       dtype=self._rdtype)
+            else:
+                # [max_depth, num_targets, num_sources, max_num_paths]
+                etas = tf.gather(complex_relative_permittivity_layer, valid_object_idx)
+                scattering_coefficient = tf.gather(scattering_coefficient,
+                                                   valid_object_idx)
+        else:
+            # [max_depth, num_targets, num_sources, max_num_paths]
+            etas, scattering_coefficient, _  = rm_callable(objects, vertices)
+        
+        # Compute cos(theta) at each hitting point
+        # [max_depth, num_targets, num_sources, max_num_paths]
+        # incident angle
+        cos_theta = -dot(k_i[:max_depth], normals, clip=True)
+        # Compute e_i_s, e_i_p, e_r_s, e_r_p at each hitting point
+        # all : [max_depth, num_targets, num_sources, max_num_paths,3]
+        # pylint: disable=unbalanced-tuple-unpacking
+        e_i_s, e_i_p, e_r_s, e_r_p = compute_field_unit_vectors(k_i[:max_depth],
+                                            k_r, normals, SolverBase.EPSILON)
+        # Compute r_s, r_p at each hitting point
+        # [max_depth, num_targets, num_sources, max_num_paths]
+        # refraction_coefficient
+        r_s, r_p, t_s, t_p = layer_reflection_coefficient(complex_relative_permittivity_layer, thickness_layer, cos_theta,
+                                                          self.frequency)
+        
+        # Multiply the reflection and refraction coefficients with the
+        # reflection reduction factor
+        # [max_depth, num_targets, num_sources, max_num_paths]
+        reduction_factor = tf.sqrt(1 - scattering_coefficient**2)
+        reduction_factor = tf.complex(reduction_factor, tf.zeros_like(reduction_factor))
+        # Compute the field transfer matrix.
+        # It is initialized with the identity matrix of size 2 (S and P
+        # polarization components)
+        # [num_targets, num_sources, max_num_paths, 2, 2]
+        mat_t = tf.eye(num_rows=2, batch_shape=[num_targets, num_sources, max_num_paths],
+                          dtype=self._dtype)
+        # Initialize last ray field unit vectors
+        # [num_targets, num_sources, max_num_paths, 3]
+        e_i_s_last = theta_hat(theta_t, phi_t) # spherical unit vector
+        e_i_p_last = phi_hat(phi_t) # spherical unit vector
+        for depth in tf.range(max_depth):
+            pass
+            
+        # [num_targets, num_sources, max_num_paths, 2, 2]
+        return mat_t
+        
 
     def _spec_transition_matrices(self, relative_permittivity,
                                   scattering_coefficient,
@@ -3377,6 +3526,212 @@ class SolverPaths(SolverBase):
         return mat_t
 
     ##################################################################
+    # Methods used for computing the refractio paths
+    ##################################################################
+
+    def _refraction_first(self, targets, sources, candidates, hit_points):
+        r'''
+        Compute the first refraction paths.
+        Input
+        -----
+        targets : [num_targets, 3], tf.float, Coordinates of the targets.
+        sources : [num_sources, 3], tf.float, Coordinates of the sources.
+        candidates : [max_depth = 1, num_sources, num_paths_per_source], int, Sequence of primitives hit at `hit_points`.
+        hit_points : [max_depth = 1, num_sources, num_paths_per_source, 3], tf.float, Intersection points.
+        '''
+        # Create and return the objects storing the refraction paths
+        paths = Paths(sources=sources,
+                      targets=targets,
+                      scene=self._scene,
+                      types=Paths.REFRACTION)
+        paths_tmp = PathsTmpData(sources, targets, self._dtype)
+        num_sources = sources.shape[0]
+        num_targets = targets.shape[0]
+        max_depth = tf.shape(candidates)[0]
+        # num_targets = 1
+        # target [num_targets, 3], target_ [1, num_targets, 1, 1, 3]
+        targets_ = tf.expand_dims(insert_dims(targets, num_dims=2, axis=1), axis=0)
+        # num_sources = 1
+        # source [num_sources, 3], source_ [1, 1, num_sources, 1, 3]
+        sources_ = tf.expand_dims(insert_dims(sources, num_dims=1, axis=1), axis=0)
+        sources_ = tf.expand_dims(sources_, axis=0)
+        # building the rays for refraction shooting
+        # origins
+        # hit_points [max_depth, num_sources, num_paths, 3]
+        # hit_points -> [max_depth, num_targets, num_sources, num_paths, 3]
+        # for every target, we check the rays from the hit points
+        hit_points = tf.tile(tf.expand_dims(hit_points, axis=1),
+                              [1, num_targets, 1, 1, 1])
+        # [max_depth * num_targets * num_sources * num_paths, 3]
+        ray_origins = tf.reshape(hit_points, [-1, 3])
+        # directions
+        # [max_depth, num_targets, num_sources, num_paths, 3]
+        # TODO: revise here for refraction direction from source to the hit point
+        # use mitsuba to lanuch the ray from the hit point along the direction
+        # check the new refraction ray if will hit within the target)
+        # check the new refraction ray if will be blocked by the objects
+        # ray_directions, rays_lengths = normalize(targets_ - hit_points)
+        # ray_directions [max_depth, num_targets, num_sources, num_paths, 3]
+        hit_points2source = hit_points - sources_
+        ray_directions, rays_lengths = normalize(hit_points2source)
+        # ray = mi.Ray3f(o = hit_points, d = ray_directions)
+        targets2hit_points = targets_ - hit_points
+        ray_directions_target, ray_lengths_target = normalize(targets2hit_points)
+        # ray_target = mi.Ray3f(o = hit_points, d = ray_directions_target)
+        # compute ray and ray_target intersection angle
+        # [max_depth, num_targets, num_sources, num_paths]
+        cos_theta = dot(ray_directions, -ray_directions_target)
+        # [max_depth, num_targets, num_sources, num_paths]
+        theta = tf.math.acos(cos_theta)
+        # if theta < 5 degree, then the ray will be captured by the target
+        # [max_depth, num_targets, num_sources, num_paths]
+        captured = tf.greater(theta, 170.0/180.0*PI)
+        # [max_depth, num_targets, num_sources, num_paths]
+        captured_ = tf.cast(captured, tf.int32)
+        # save theta and hit_points tensor into a csv file 
+        # each line is theta and hit_points for a ray
+
+        # record
+        # import csv
+        DEBUG = False
+        if DEBUG:
+            with open('theta.csv', 'w') as f:
+                writer = csv.writer(f)
+                for i in range(theta.shape[1]):
+                    for j in range(theta.shape[2]):
+                        for k in range(theta.shape[3]):
+                            writer.writerow([theta[0,i,j,k].numpy(), hit_points[0,i,j,k,0].numpy(), hit_points[0,i,j,k,1].numpy(), hit_points[0,i,j,k,2].numpy()])
+
+
+        # mask captured paths
+        # add num_targets dimension to candidates
+        # [max_depth, num_targets, num_sources, num_paths]
+        candidates = tf.tile(tf.expand_dims(candidates, axis=1),
+                                [1, num_targets, 1, 1])
+        prefix_mask_capture = tf.logical_and(captured, tf.not_equal(candidates, -1))
+        # along the depth, reduce the mask to a single boolean
+        # [num_targets, num_sources, num_paths]
+        prefix_mask_capture_ = tf.reduce_any(prefix_mask_capture, axis=0)
+        prefix_mask_capture_int = tf.cast(prefix_mask_capture_, tf.int32) # to int for sum
+        num_paths_capture = tf.reduce_sum(prefix_mask_capture_int, axis=-1)
+        max_num_paths = tf.reduce_max(num_paths_capture)
+        # [num_valid_paths, 3] index of the valid paths, 3 dimension index: target, source, path
+        gather_indices = tf.where(prefix_mask_capture_)
+        # check whether there is valid paths
+        if tf.size(gather_indices) == 0:
+            return paths, paths_tmp
+        # [num_targets, num_sources, num_paths]
+        path_indices = tf.cumsum(prefix_mask_capture_int, axis=-1)
+        # [num_valid_paths]
+        path_indices = tf.gather_nd(path_indices, gather_indices) - 1
+        # refraction indices
+        refraction_indices = tf.transpose(gather_indices, [1,0])
+        if not tf.size(refraction_indices) == 0:
+            refraction_indices = tf.tensor_scatter_nd_update(refraction_indices,
+                                [[2]], [path_indices])
+        # [num_valid_paths, 3]
+        refraction_indices = tf.transpose(refraction_indices, [1,0])
+        # Mask of valid paths
+        # [num_targets, num_sources, max_num_paths]
+        opt_prefix_mask = tf.fill([max_depth, num_targets, num_sources,
+                                   max_num_paths], False)
+        # Locations of the interactions
+        # [max_depth, num_targets, num_sources, max_num_paths, 3]
+        opt_hit_points = tf.zeros([max_depth, num_targets, num_sources,
+                                   max_num_paths, 3], dtype=self._rdtype)
+        # [max_depth, num_targets, num_sources, max_num_paths]
+        opt_candidates = tf.fill([max_depth, num_targets, num_sources,
+                                  max_num_paths], -1)
+
+        if max_depth > 0:
+            for depth in tf.range(max_depth, dtype=tf.int64):
+                # indices of the valid paths at the current depth
+                # [num_valid_paths, 1+3 (depth, target, source, path)]
+                refraction_indices_ = tf.pad(refraction_indices, [[0,0],[1,0]], mode = 'CONSTANT', constant_values=depth)
+                # prefix_mask
+                prefix_mask_ = tf.gather(prefix_mask_capture, depth, axis=0)
+                # [num_valid_paths, 3]
+                prefix_mask_ = tf.gather_nd(prefix_mask_, gather_indices)
+                # store valid intersection points
+                opt_prefix_mask = tf.tensor_scatter_nd_update(opt_prefix_mask,
+                                refraction_indices_, prefix_mask_)
+                # locations of the interactions
+                # [num_targets, num_sources, num_paths, 3]
+                # get the hits points of the current depth
+                hit_points_ = tf.gather(hit_points, depth, axis=0)
+                hit_points_ = tf.gather_nd(hit_points_, gather_indices)
+                opt_hit_points = tf.tensor_scatter_nd_update(opt_hit_points,
+                                                refraction_indices_, hit_points_)
+                # intersection primitives
+                candidates_ = tf.gather(candidates, depth, axis=0)
+                candidates_ = tf.gather_nd(candidates_, gather_indices)
+                opt_candidates = tf.tensor_scatter_nd_update(opt_candidates,
+                                                refraction_indices_, candidates_)
+
+        # [1, num_targets, num_sources, max_num_paths]
+        opt_candidates_ = tf.where(opt_candidates == -1, 0, opt_candidates)
+        # [num_targets, num_sources, max_num_paths,3]
+        normals = tf.gather(self._normals, opt_candidates_, axis=0)
+        # Add a dummy entry to primitives_2_objects with value -1.
+        # 
+        primitives_2_objects = tf.pad(self._primitives_2_objects, [[0,1]],
+                                        constant_values=-1)
+        num_primitives = tf.shape(self._primitives_2_objects)[0]
+        # [max_depth, num_targets, num_sources, max_num_paths]
+        opt_candidates_ = tf.where(opt_candidates == -1, num_primitives,
+                                   opt_candidates)
+        # [max_depth, num_targets, num_sources, max_num_paths]
+        objects = tf.gather(primitives_2_objects, opt_candidates_)
+        paths.vertices = opt_hit_points # [max_depth, num_targets, num_sources, max_num_paths, 3]
+        paths.objects = objects # [max_depth, num_targets, num_sources, max_num_paths]
+
+
+        flag_test_block = False
+        if flag_test_block:
+            # test for blockage
+            # [max_depth * num_targets * num_sources * num_paths, 3]
+            ray_directions = tf.reshape(ray_directions, [-1, 3])
+            # [max_depth * num_targets * num_sources * num_paths]
+            rays_lengths = tf.reshape(rays_lengths, [-1])
+            # [max_depth * num_targets * num_sources * num_paths]
+            blocked = self._test_obstruction(ray_origins, ray_directions, rays_lengths)
+            # [max_depth, num_targets, num_sources, num_paths]
+            blocked = tf.reshape(blocked,
+                                 [max_depth, num_targets, num_sources, -1])
+            # [max_depth, num_targets, num_sources, num_paths]
+            # consider the valid paths
+            prefix_mask = tf.logical_and(~blocked, tf.not_equal(candidates, -1))
+            # optimize tensor size by ensuring that the length of the paths
+            # dimension correspond to the maximum number of paths over all links
+            # keep a path if at least one of its prefix is valid
+            # prefix_mask_ = [num_targets, num_sources, num_paths]
+            # along the depth, reduce the mask to a single boolean
+            prefix_mask_ = tf.reduce_any(prefix_mask, axis=0)
+            prefix_mask_int_ = tf.cast(prefix_mask_, tf.int32) # to int for sum
+            # maximum number of valid paths over all links
+            # [num_targets, num_sources]
+            # along the final dimension, sum
+            num_paths = tf.reduce_sum(prefix_mask_int_, axis=-1)
+            # maximum number of paths
+            max_num_paths = tf.reduce_max(num_paths)
+            # [num_valid_paths, 3]
+            # we only care the valid paths
+            gather_indices = tf.where(prefix_mask_)
+            # to build the indices of the paths in the tensor with optimized size,
+            # the path dimension is indexed by counting the valid path in the order
+            # in which they appear [num_targets, num_sources, num_paths]
+            # [num_valid_paths]
+            path_indices = tf.cumsum(prefix_mask_int_, axis=-1)
+            # [num_valid_paths, 3]
+            path_indices = tf.gather_nd(path_indices, gather_indices) - 1
+            # scatter indices
+            # [3, num_valid_paths]
+            scatter_indices = tf.transpose(gather_indices, [1,0])
+
+        
+        return paths, paths_tmp
+
+    ##################################################################
     # Methods used for computing the scattered paths
     ##################################################################
 
@@ -3440,16 +3795,19 @@ class SolverPaths(SolverBase):
                              [max_depth, num_targets, num_sources, -1])
 
         # Mask blocked paths
-        # [max_depth, num_targets, num_sources, num_paths]
+        # candidates [max_depth, num_sources, num_paths] -> (check every target)
+        # candidates [max_depth, num_targets, num_sources, num_paths]
         candidates = tf.tile(tf.expand_dims(candidates, axis=1),
                              [1, num_targets, 1, 1])
         # [max_depth, num_targets, num_sources, num_paths]
+        # prefix_mask is non-blocked and valid primitives
         prefix_mask = tf.logical_and(~blocked, tf.not_equal(candidates, -1))
 
         # Optimize tensor size by ensuring that the length of the paths
         # dimension correspond to the maximum number of paths over all links
 
         # Keep a path if at least one of its prefix is valid
+        # remove the invalid prefix path
         # [num_targets, num_sources, num_paths]
         prefix_mask_ = tf.reduce_any(prefix_mask, axis=0)
         prefix_mask_int_ = tf.cast(prefix_mask_, tf.int32)
@@ -3462,6 +3820,7 @@ class SolverPaths(SolverBase):
         max_num_paths = tf.reduce_max(num_paths)
 
         # [num_valid_paths, 3]
+        # 
         gather_indices = tf.where(prefix_mask_)
         # To build the indices of the paths in the tensor with optimized size,
         # the path dimension is indexed by counting the valid path in the order
@@ -3555,13 +3914,13 @@ class SolverPaths(SolverBase):
         # [max_depth, num_targets, num_sources, max_num_paths]
         objects = tf.gather(primitives_2_objects, opt_candidates_)
 
-        # Create and return the the objects storing the scattered paths
+        # Create and return the objects storing the scattered paths
         paths = Paths(sources=sources,
                       targets=targets,
                       scene=self._scene,
                       types=Paths.SCATTERED)
-        paths.vertices = opt_hit_points
-        paths.objects = objects
+        paths.vertices = opt_hit_points # [max_depth, num_targets, num_sources, max_num_paths, 3]
+        paths.objects = objects # [max_depth, num_targets, num_sources, max_num_paths]
 
         paths_tmp = PathsTmpData(sources, targets, self._dtype)
         paths_tmp.normals = normals

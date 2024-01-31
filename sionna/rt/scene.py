@@ -420,7 +420,7 @@ class Scene:
     def trace_paths(self, max_depth=3, method="fibonacci", num_samples=int(1e6),
                     los=True, reflection=True, diffraction=False,
                     scattering=False, scat_keep_prob=0.001,
-                    edge_diffraction=False, check_scene=True, refraction=True):
+                    edge_diffraction=False, check_scene=True, refraction=False):
         # pylint: disable=line-too-long
         r"""
         Computes the trajectories of the paths by shooting rays
@@ -621,6 +621,12 @@ class Scene:
         sources, targets, paths_as_dict = output[:3]
         paths = Paths(sources, targets, self)
         paths.from_dict(paths_as_dict)
+        # write path_as_dict into a json file
+        # import json
+        # paths_as_dict_converted = {k: v.numpy().tolist() if isinstance(v, tf.Tensor) else v for k, v in paths_as_dict.items()}
+        # with open('paths.json', 'w') as f:
+        #     json.dump(paths_as_dict_converted, f)
+
 
         # If the hidden input flag testing is True, additional data
         # is returned which is required for some unit tests

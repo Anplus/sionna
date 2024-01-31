@@ -1,0 +1,94 @@
+Scene[
+  children = [
+    PerspectiveCamera[
+      x_fov = [98.405],
+      near_clip = 0.1,
+      far_clip = 1000,
+      film = HDRFilm[
+        size = [1920, 1080],
+        crop_size = [1920, 1080],
+        crop_offset = [0, 0],
+        sample_border = 0,
+        compensate = 0,
+        filter = GaussianFilter[stddev=0.50, radius=2.00],
+        file_format = OpenEXR,
+        pixel_format = rgb,
+        component_format = float16,
+      ],
+      sampler = IndependentSampler[
+        base_seed = 0
+        sample_count = 4096
+        samples_per_wavefront = 1
+        wavefront_size = 0
+      ],
+      resolution = [1920, 1080],
+      shutter_open = 0,
+      shutter_open_time = 0,
+      to_world = [[-0.977023, -0.107717, -0.183912, 1.28705],
+                  [-0.213135, 0.493779, 0.843063, -5.89989],
+                  [-3.9556e-08, 0.86289, -0.505391, 3.53681],
+                  [0, 0, 0, 1]]
+    ],
+    ConstantBackgroundEmitter[
+      radiance = SRGBReflectanceSpectrum[
+        value = [[1, 1, 1]]
+      ],
+      bsphere = BoundingSphere3f[
+        center = [0, 0, 1.45],
+        radius = 3.17873
+      ]
+    ],
+    PathIntegrator[
+      max_depth = 12,
+      rr_depth = 5
+    ],
+    TwoSided[
+      brdf[0] = SmoothDiffuse[
+        reflectance = SRGBReflectanceSpectrum[
+          value = [[0.603815, 0.090312, 0.050031]]
+        ]
+      ],
+      brdf[1] = SmoothDiffuse[
+        reflectance = SRGBReflectanceSpectrum[
+          value = [[0.603815, 0.090312, 0.050031]]
+        ]
+      ]
+    ],
+    TwoSided[
+      brdf[0] = SmoothDiffuse[
+        reflectance = SRGBReflectanceSpectrum[
+          value = [[0.539479, 0.539479, 0.53948]]
+        ]
+      ],
+      brdf[1] = SmoothDiffuse[
+        reflectance = SRGBReflectanceSpectrum[
+          value = [[0.539479, 0.539479, 0.53948]]
+        ]
+      ]
+    ],
+    PLYMesh[
+      name = "floor.ply",
+      bbox = BoundingBox3f[
+        min = [-2, -2, 0],
+        max = [2, 2, 0]
+      ],
+      vertex_count = 32,
+      vertices = [640 B of vertex data],
+      face_count = 48,
+      faces = [576 B of face data],
+      face_normals = 1
+    ],
+    PLYMesh[
+      name = "wall.ply",
+      bbox = BoundingBox3f[
+        min = [-4.37114e-08, -1.75, 0.9],
+        max = [0.1, 1.75, 2.9]
+      ],
+      vertex_count = 24,
+      vertices = [480 B of vertex data],
+      face_count = 40,
+      faces = [480 B of face data],
+      face_normals = 1
+    ]
+  ]
+]

@@ -270,7 +270,7 @@ class RadioMaterial:
         else:
             self._relative_permittivity_layer = tf.cast(v, self._rdtype)
     ###############################
-    #TODO: add conductivity_layer
+    # TODO: add conductivity_layer
     ###############################
     @property
     def conductivity_layer(self):

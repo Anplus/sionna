@@ -11,6 +11,7 @@ import drjit as dr
 import numpy as np
 from sionna.utils import expand_to_rank
 from sionna import PI
+from sionna import SPEED_OF_LIGHT
 
 def rotation_matrix(angles):
     r"""
@@ -486,7 +487,7 @@ def compute_field_unit_vectors(k_i, k_r, n, epsilon, return_e_r=True):
 ######################################################################
 # TODO: layers Fresnel coefficients
 ######################################################################
-def layer_reflection_coefficient(complex_relative_permittivity_layer, thickness_layer, cos_theta):
+def layer_reflection_coefficient(complex_relative_permittivity_layer, thickness_layer, cos_theta, freq):
     """
     Compute layer reflection coefficients
 
@@ -517,10 +518,10 @@ def layer_reflection_coefficient(complex_relative_permittivity_layer, thickness_
     """
 
     # Constants
-    speed_of_light = 3e8
+    speed_of_light = SPEED_OF_LIGHT
 
     # Calculate wavelength
-    frequency = tf.divide(speed_of_light, complex_relative_permittivity_layer)
+    frequency = freq
     wavelength = tf.divide(speed_of_light, frequency)
 
     # Calculate the wave vector component in the slab
