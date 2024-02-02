@@ -487,6 +487,46 @@ def compute_field_unit_vectors(k_i, k_r, n, epsilon, return_e_r=True):
 ######################################################################
 # TODO: layers Fresnel coefficients
 ######################################################################
+def layer_refraction_coefficient(complex_relative_permittivity_layer, thickness_layer, cos_theta, freq):
+    """
+    Compute layer refraction coefficients
+    Input
+    ------
+    complex_relative_permittivity_layer : Any shape, tf.complex
+        Complex relative permittivity
+
+    thickness_layer: Any shape, tf.float
+        Thickness of the layer
+
+    cos_theta : Same as ``eta``, tf.float
+        Cosine of the incident angle
+    Output
+    -------
+    t_te : Same as input, tf.complex
+        Fresnel transmission coefficient for S direction
+    
+    t_tm : Same as input, tf.complex
+        Fresnel transmission coefficient for P direction
+    """
+    cos_theta = tf.complex(cos_theta, tf.zeros_like(cos_theta))
+    # Calculate wavelength
+    wavelength = tf.divide(SPEED_OF_LIGHT, freq)
+    wavelength_ = 2 * PI * thickness_layer / wavelength
+    # Calculate the wave vector component in the slab
+    tmp = tf.complex(wavelength_, tf.zeros_like(wavelength_))
+    q = tmp * tf.sqrt(
+        complex_relative_permittivity_layer - tf.square(tf.sin(tf.acos(cos_theta))))
+
+    # Reflection coefficients for TE and TM polarization (Fresnel coefficients)
+    sqrt_term = tf.sqrt(complex_relative_permittivity_layer - tf.square(tf.sin(tf.acos(cos_theta))))
+    ReTE = (cos_theta - sqrt_term) / (cos_theta + sqrt_term)
+    ReTM = (complex_relative_permittivity_layer * cos_theta - sqrt_term) / (
+                complex_relative_permittivity_layer * cos_theta + sqrt_term)
+    exp_term = tf.exp(-1j * 2 * q)
+    t_te = (1 - tf.square(ReTE)) * tf.exp(-1j * q) / (1 - tf.square(ReTE) * exp_term)
+    t_tm = (1 - tf.square(ReTM)) * tf.exp(-1j * q) / (1 - tf.square(ReTM) * exp_term)
+    return t_te, t_tm
+
 def layer_reflection_coefficient(complex_relative_permittivity_layer, thickness_layer, cos_theta, freq):
     """
     Compute layer reflection coefficients
@@ -509,12 +549,6 @@ def layer_reflection_coefficient(complex_relative_permittivity_layer, thickness_
 
     r_tm : Same as input, tf.complex
         Fresnel reflection coefficient for P direction
-
-    t_te : Same as input, tf.complex
-        Fresnel transmission coefficient for S direction
-    
-    t_tm : Same as input, tf.complex
-        Fresnel transmission coefficient for P direction
     """
 
     # Constants
@@ -538,10 +572,8 @@ def layer_reflection_coefficient(complex_relative_permittivity_layer, thickness_
     exp_term = tf.exp(-1j * 2 * q)
     r_te = ReTE * (1 - exp_term) / (1 - tf.square(ReTE) * exp_term)
     r_tm = ReTM * (1 - exp_term) / (1 - tf.square(ReTM) * exp_term)
-    t_te = (1 - tf.square(ReTE)) * tf.exp(-1j * q) / (1 - tf.square(ReTE) * exp_term)
-    t_tm = (1 - tf.square(ReTM)) * tf.exp(-1j * q) / (1 - tf.square(ReTM) * exp_term)
 
-    return r_te, r_tm, t_te, t_tm
+    return r_te, r_tm
 
 
 def reflection_coefficient(eta, cos_theta):

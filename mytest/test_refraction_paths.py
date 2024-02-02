@@ -34,7 +34,7 @@ scene.add(Receiver(name="rx",
                       position=rx_pos,
                       orientation=[0,0,0]))
 
-paths = scene.compute_paths(los=True, reflection=False, scattering=True, diffraction=False, refraction=True, num_samples=1e5)
+paths = scene.compute_paths(los=False, reflection=False, scattering=False, diffraction=False, refraction=True, num_samples=1e5)
 
 print(paths.vertices)
 paths.export("test_refraction_paths.obj")

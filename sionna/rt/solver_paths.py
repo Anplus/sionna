@@ -19,7 +19,7 @@ from .utils import dot, phi_hat, theta_hat, theta_phi_from_unit_vec,\
     normalize, moller_trumbore, component_transform, mi_to_tf_tensor,\
         compute_field_unit_vectors, reflection_coefficient, fibonacci_lattice,\
             cot, cross, sign, rotation_matrix, acos_diff
-from .utils import layer_reflection_coefficient
+from .utils import layer_reflection_coefficient, layer_refraction_coefficient
 from .solver_base import SolverBase
 from .scattering_pattern import ScatteringPattern
 
@@ -542,14 +542,16 @@ class SolverPaths(SolverBase):
             # generate the first refraction paths
             refraction_paths, refraction_paths_tmp = self._refraction_first(targets, sources,
                                                                             candidates_refraction, hit_points_refraction)
-            # start launching the next event refraction and reflection paths
-            # refraction_paths, refraction_paths_tmp = self._compute_directions_distances_delays_angles(refraction_paths,
-            #                                                                                        refraction_paths_tmp, True)
+            # TODO: start launching the next event refraction and reflection paths
+            # Compute paths length, delays, angles and directions of arrivals
+            # and departures for the specular paths
+            refraction_paths, refraction_paths_tmp = self._compute_refraction_distance_angles(refraction_paths,
+                                                                                            refraction_paths_tmp)
             num_sources = refraction_paths.sources.shape[0]
             num_targets = refraction_paths.targets.shape[0]
             max_depth = tf.shape(refraction_paths.objects)[0]
             num_path = tf.shape(refraction_paths.objects)[3]
-            refraction_paths.mask = tf.fill([num_sources,num_targets,num_path], True)
+            # refraction_paths.mask = tf.fill([num_sources,num_targets,num_path], True)
             refraction_paths.targets_sources_mask = tf.fill([num_sources, num_targets, num_path], True)
             refraction_paths.tau = tf.zeros([num_sources,num_targets,num_path], dtype=tf.dtypes.float32)
             refraction_paths.theta_r = tf.ones([num_sources,num_targets,num_path], dtype=tf.dtypes.float32)
@@ -667,6 +669,10 @@ class SolverPaths(SolverBase):
         scat_paths_tmp.num_samples = num_samples
         scat_paths_tmp.scat_keep_prob = tf.cast(scat_keep_prob, self._rdtype)
 
+        # TODO: refraction paths tmp
+        refraction_paths_tmp.num_samples = num_samples
+        refraction_paths_tmp.scat_keep_prob = tf.cast(scat_keep_prob, self._rdtype)
+
         return spec_paths, diff_paths, scat_paths, spec_paths_tmp,\
             diff_paths_tmp, scat_paths_tmp, refraction_paths, refraction_paths_tmp
 
@@ -775,8 +781,9 @@ class SolverPaths(SolverBase):
         ##############################################
         # TODO: extract scene thickness properties
         ##############################################
-        thickness_layers = object_properties[6]
-        complex_relative_permittivity_layer = object_properties[7]
+        complex_relative_permittivity_layer = object_properties[6]
+        thickness_layers = object_properties[7]
+
 
         ##############################################
         # Refraction Path
@@ -784,7 +791,21 @@ class SolverPaths(SolverBase):
         #############################################
         if refraction_paths.objects.shape[3] > 0:
             all_paths = all_paths.merge(refraction_paths)
-            # return all_paths.sources, all_paths.targets, all_paths.to_dict()
+            refraction_mat_t = self._refraction_transition_matrices(complex_relative_permittivity_layer,
+                                                                    thickness_layers, scattering_coefficient,
+                                                                    refraction_paths, refraction_paths_tmp)
+            # Only the transition matrix and vector of incidence/reflection are
+            # required for the computation of the paths coefficients
+            all_paths_tmp.mat_t = tf.concat([all_paths_tmp.mat_t, refraction_mat_t],
+                                            axis=-3)
+            all_paths_tmp.k_tx = tf.concat([all_paths_tmp.k_tx,
+                                            refraction_paths_tmp.k_tx],
+                                           axis=-2)
+            all_paths_tmp.k_rx = tf.concat([all_paths_tmp.k_rx,
+                                            refraction_paths_tmp.k_rx],
+                                           axis=-2)
+            
+
         ##############################################
         # LoS and Specular paths
         ##############################################
@@ -906,7 +927,7 @@ class SolverPaths(SolverBase):
             all_paths_tmp.k_tx = tf.reshape(all_paths_tmp.k_tx, batch_dims+[3])
             all_paths_tmp.k_rx = tf.reshape(all_paths_tmp.k_rx, batch_dims+[3])
 
-        DEBUG = True
+        DEBUG = False
         if DEBUG:
             return sources, targets, all_paths.to_dict()
         ####################################################
@@ -2397,28 +2418,20 @@ class SolverPaths(SolverBase):
     #######################
     # TODO: Add the computation of the transition matrices for the refraction and reflection for layers
     #######################
-    def _refraction_transition_matrices(self, relative_permittivity, thickness, paths, paths_tmp):
-        # pylint: disable=line-too-long
-        """
-        Compute the transition matrices, delays, angles of departures, and
-        
-        """
-        return []
-
-
     def _reflection_transition_matrices(self, relative_permittivity, thickness, paths, paths_tmp):
         # pylint: disable=line-too-long
         """
         Compute the transition matrices, delays, angles of departures, and
         
         """
+        
         return []
     
     ########################
     # TODO: refraction transition matrices
     ########################
     def _refraction_transition_matrices(self, complex_relative_permittivity_layer,
-                                            thickness_layer, paths, paths_tmp):
+                                            thickness_layer, scattering_coefficient, paths, paths_tmp):
         # pylint: disable=line-too-long
         """
         Compute the transition matrices, delays, angles of departures, and
@@ -2467,6 +2480,7 @@ class SolverPaths(SolverBase):
         # Flag that indicates if a ray is valid
         valid_ray = tf.not_equal(objects, -1) # [max_depth, num_targets, num_sources, max_num_paths]
         # Pad to enable detection of the last valid reflection or refraction
+        # for later validation check
         valid_ray = tf.pad(valid_ray, [[0,1], [0,0], [0,0], [0,0]], constant_values=False) # [max_depth+1, num_targets, num_sources, max_num_paths]
         # Relative perimittivities.
         # If a callable is defined to compute the radio material properties,
@@ -2482,11 +2496,13 @@ class SolverPaths(SolverBase):
                 # if no material is defined, we assume free space
                 # [max_depth, num_targets, num_sources, max_num_paths]
                 etas = tf.zeros_like(valid_object_idx, dtype=self._dtype)
+                thickness_layer_ = tf.zeros_like(valid_object_idx, dtype=self._rdtype)
                 scattering_coefficient = tf.zeros_like(valid_object_idx,
                                                        dtype=self._rdtype)
             else:
                 # [max_depth, num_targets, num_sources, max_num_paths]
                 etas = tf.gather(complex_relative_permittivity_layer, valid_object_idx)
+                thickness_layer_ = tf.gather(thickness_layer, valid_object_idx)
                 scattering_coefficient = tf.gather(scattering_coefficient,
                                                    valid_object_idx)
         else:
@@ -2505,8 +2521,9 @@ class SolverPaths(SolverBase):
         # Compute r_s, r_p at each hitting point
         # [max_depth, num_targets, num_sources, max_num_paths]
         # refraction_coefficient
-        r_s, r_p, t_s, t_p = layer_reflection_coefficient(complex_relative_permittivity_layer, thickness_layer, cos_theta,
-                                                          self.frequency)
+        t_s, t_p = layer_refraction_coefficient(etas, thickness_layer_,
+                                                        cos_theta,
+                                                        self._scene.frequency)
         
         # Multiply the reflection and refraction coefficients with the
         # reflection reduction factor
@@ -2521,12 +2538,89 @@ class SolverPaths(SolverBase):
                           dtype=self._dtype)
         # Initialize last ray field unit vectors
         # [num_targets, num_sources, max_num_paths, 3]
-        e_i_s_last = theta_hat(theta_t, phi_t) # spherical unit vector
-        e_i_p_last = phi_hat(phi_t) # spherical unit vector
+        last_e_r_s = theta_hat(theta_t, phi_t) # spherical unit vector
+        last_e_r_p = phi_hat(phi_t) # spherical unit vector
         for depth in tf.range(max_depth):
-            pass
-            
+            # is this a valid refraction ray?
+            # [num_targets, num_sources, max_num_paths]
+            # TODO: check if the transmission coefficicent is large enough
+            # valid = tf.logical_and(valid_ray[depth], t_s[depth] > 0.1)
+            valid = valid_ray[depth]
+            # [num_targets, num_sources, max_num_paths, 1, 1]
+            next_valid = valid_ray[depth+1]
+            # Expand for broadcasting
+            # [num_targets, num_sources, max_num_paths, 1, 1]
+            next_valid = insert_dims(next_valid, 2)
+                        # [num_targets, num_sources, max_num_paths]
+            reduction_factor_ = reduction_factor[depth]
+            # [num_targets, num_sources, max_num_paths, 1, 1]
+            reduction_factor_ = insert_dims(reduction_factor_, 2, -1)
+
+            # Early stopping if no active rays
+            if not tf.reduce_any(valid):
+                break
+
+            # add dimension for broadcasting with coordinates
+            # [num_targets, num_sources, max_num_paths, 1]
+            valid_ = tf.expand_dims(valid, axis=-1)
+
+            # change of basis matrix
+            # [num_targets, num_sources, max_num_paths, 2, 2]
+            # matrix-valued function 
+            mat_cob = component_transform(last_e_r_s, last_e_r_p, e_i_s[depth],
+                                          e_i_p[depth])
+            mat_cob = tf.complex(mat_cob, tf.zeros_like(mat_cob))
+            # Only apply transform if valid reflection
+            # [num_targets, num_sources, max_num_paths, 1, 1]
+            valid__ = tf.expand_dims(valid_, axis=-1)
+            # [num_targets, num_sources, max_num_paths, 2, 2]
+            e = tf.where(valid__, tf.linalg.matmul(mat_cob, mat_t), mat_t)
+            # Only update ongoing direction for next iteration if this
+            # reflection is valid and if this is not the last step
+            last_e_r_s = tf.where(valid_, e_r_s[depth], last_e_r_s)
+            last_e_r_p = tf.where(valid_, e_r_p[depth], last_e_r_p)
+
+            # Fresnel coefficients
+            # [num_targets, num_sources, max_num_paths, 2]
+            t = tf.stack([t_s[depth], t_p[depth]], -1)
+            # Set the coefficients to one if non-valid reflection
+            # [num_targets, num_sources, max_num_paths, 2]
+            t = tf.where(valid_, t, tf.ones_like(t))
+            # add a dimension for broadcasting with the field transfer matrix
+            # [num_targets, num_sources, max_num_paths, 2, 1]
+            t = tf.expand_dims(t, axis=-1)
+            # Apply Fresnel coefficient
+            # [num_targets, num_sources, max_num_paths, 2, 2]
+            mat_t = t*e
+      
+            # TODO: add scattering reduction
+            scattering = False
+            if scattering:
+                # For scattering, only the distance up to the last intersection
+                # point is considered for path loss.
+                # [num_targets, num_sources, max_num_paths]
+                total_distance = paths_tmp.scat_src_2_last_int_dist
+            else:
+                # [num_targets, num_sources, max_num_paths]
+                total_distance = paths_tmp.total_distance
+
+        # Divide by total distance to account for propagation loss
+        # [num_targets, num_sources, max_num_paths, 1, 1]
+        total_distance = expand_to_rank(total_distance, tf.rank(mat_t),
+                                        axis=3)
+        total_distance = tf.complex(total_distance,
+                                    tf.zeros_like(total_distance))
         # [num_targets, num_sources, max_num_paths, 2, 2]
+        mat_t = tf.math.divide_no_nan(mat_t, total_distance)            
+
+        # Set invalid paths to 0 and stores the transition matrices
+        # Expand masks to broadcast with the field components
+        # [num_targets, num_sources, max_num_paths, 1, 1]
+        mask_ = expand_to_rank(paths.mask, 5, axis=3)
+        # Zeroing coefficients corresponding to non-valid paths
+        # [num_targets, num_sources, max_num_paths, 2, 2]
+        mat_t = tf.where(mask_, mat_t, tf.zeros_like(mat_t))
+
         return mat_t
         
 
@@ -3592,9 +3686,9 @@ class SolverPaths(SolverBase):
         # each line is theta and hit_points for a ray
 
         # record
-        # import csv
         DEBUG = False
         if DEBUG:
+            import csv
             with open('theta.csv', 'w') as f:
                 writer = csv.writer(f)
                 for i in range(theta.shape[1]):
@@ -3685,8 +3779,13 @@ class SolverPaths(SolverBase):
         paths.vertices = opt_hit_points # [max_depth, num_targets, num_sources, max_num_paths, 3]
         paths.objects = objects # [max_depth, num_targets, num_sources, max_num_paths]
 
+        # compute normals
+        # [max_depth, num_targets, num_sources, max_num_paths, 3]
+        paths_tmp.normals = normals
 
         flag_test_block = False
+        mask = tf.fill([num_targets, num_sources, max_num_paths], True)
+        paths.mask = mask
         if flag_test_block:
             # test for blockage
             # [max_depth * num_targets * num_sources * num_paths, 3]
@@ -4347,6 +4446,107 @@ class SolverPaths(SolverBase):
     ##################################################################
     # Utilities
     ##################################################################
+    
+    ##################################################################
+    # TODO: compute refraction_distance and angles
+    ##################################################################
+    def _compute_refraction_distance_angles(self, paths, paths_tmp):
+        r"""
+        Computes the distance from the source to the intersection point
+        ``k_i`` and ``k_r``
+        - The length of each path segment ``distances``
+        - The delays of each path
+        - The angles of departure (``theta_t``, ``phi_t``) and arrival
+        (``theta_r``, ``phi_r``)
+        """
+        objects = paths.objects
+        vertices = paths.vertices # [max_depth, num_targets, num_sources, max_num_paths, 3]
+        sources = paths.sources # [num_sources, 3]
+        targets = paths.targets # [num_targets, 3]
+        mask = paths.mask
+        max_depth = tf.shape(vertices)[0] 
+        valid_ray = tf.not_equal(objects, -1) # [max_depth, num_targets, num_sources, max_num_paths]
+        # Vertices updated with the sources and targets
+        sources = tf.expand_dims(tf.expand_dims(sources, axis=0), axis=2) # [1, num_sources, 1, 3]
+        sources = tf.broadcast_to(sources, tf.shape(vertices)[1:]) # [num_targets, num_sources, max_num_paths, 3]
+        sources = tf.expand_dims(sources, axis=0) # [1, num_targets, num_sources, max_num_paths, 3]
+        vertices = tf.concat([sources, vertices], axis=0) # [1 + max_depth, num_targets, num_sources, max_num_paths, 3]
+        # For the targets, we need to account for the paths having different depths.
+        # Pad vertices with dummy values to create the required extra depth
+        vertices = tf.pad(vertices, [[0,1],[0,0],[0,0],[0,0],[0,0]]) # [1 + max_depth + 1, num_targets, num_sources, max_num_paths, 3]
+        targets = tf.expand_dims(tf.expand_dims(targets, axis=1), axis=2) # [num_targets, 1, 1, 3]
+        targets = tf.broadcast_to(targets, tf.shape(vertices)[1:]) # [num_targets, num_sources, max_num_paths, 3]
+        #  [max_depth, num_targets, num_sources, max_num_paths]
+        target_indices = tf.cast(valid_ray, tf.int64)
+        #  [num_targets, num_sources, max_num_paths]
+        target_indices = tf.reduce_sum(target_indices, axis=0) + 1
+        target_indices = tf.reshape(target_indices, [-1,1]) # [num_targets*num_sources*max_num_paths,1]
+        # Indices of all (target, source,paths) entries
+        # [num_targets*num_sources*max_num_paths, 3]
+        target_indices_ = tf.where(tf.fill(tf.shape(vertices)[1:4], True)) # [num_targets, num_sources, max_num_paths, 3]
+        # Indices of all entries in vertices
+        # [num_targets*num_sources*max_num_paths, 3+1]
+        target_indices = tf.concat([target_indices, target_indices_], axis=1)
+        # Reshape targets
+        # vertices : [max_depth + 1, num_targets, num_sources, max_num_paths, 3]
+        targets = tf.reshape(targets, [-1,3]) # [num_targets*num_sources*max_num_paths, 3]
+        vertices = tf.tensor_scatter_nd_update(vertices, target_indices, targets) # [max_depth + 1, num_targets, num_sources, max_num_paths, 3]
+        # Direction of arrivals (k_i)
+        # The last item (k_i[max_depth]) correspond to the direction of arrival
+        # at the target. Therefore, k_i is a tensor of length `max_depth + 1`,
+        # where `max_depth` is the number of maximum interaction (which could be
+        # zero if only LoS is requested).
+        # k_i : [max_depth + 1, num_targets, num_sources, max_num_paths, 3]
+        # ray_lengths : [max_depth + 1, num_targets, num_sources, max_num_paths]
+        k_i = tf.roll(vertices, -1, axis=0) - vertices
+        k_i,ray_lengths = normalize(k_i)
+        k_i = k_i[:max_depth+1]
+        ray_lengths = ray_lengths[:max_depth+1]
+        # Direction of departures (k_r) at interaction points.
+        # We do not need the direction of departure at the source, as it   
+        # is the same as k_i[0]. Therefore `k_r` only stores the directions of
+        # departures at the `max_depth` interaction points.
+        # [max_depth, num_targets, num_sources, max_num_paths, 3]
+        k_r = tf.roll(vertices, -2, axis=0) - tf.roll(vertices, -1, axis=0)
+        k_r,_ = normalize(k_r)
+        k_r = k_r[:max_depth]
+        # Compute the distance from the sources to the intersection point
+        # [max_depth, num_targets, num_sources, max_num_paths]
+        lengths_mask = tf.cast(valid_ray, self._rdtype)
+        # First ray is always valid (LoS)
+        # [1 + max_depth, num_targets, num_sources, max_num_paths]
+        lengths_mask = tf.pad(lengths_mask, [[1,0],[0,0],[0,0],[0,0]],
+                                constant_values=tf.ones((),self._rdtype))
+        # [max_depth + 1, num_targets, num_sources, max_num_paths]
+        distances = lengths_mask*ray_lengths
+        # Compute the delays
+        total_distance = tf.reduce_sum(distances, axis=0) # [num_targets, num_sources, max_num_paths]
+        tau = total_distance/SPEED_OF_LIGHT # [num_targets, num_sources, max_num_paths]
+        # Compute angles of departures and arrival
+        # theta_t, phi_t: [num_targets, num_sources, max_num_paths]
+        theta_t, phi_t = theta_phi_from_unit_vec(k_i[0])
+        # theta_r, phi_r: [num_targets, num_sources, max_num_paths]
+        # Depth of the rays
+        # [num_targets, num_sources, max_num_paths]
+        ray_depth = tf.reduce_sum(tf.cast(valid_ray, tf.int32), axis=0)
+        k_rx = -tf.gather(tf.transpose(k_i, [1,2,3,0,4]), ray_depth,
+                                    batch_dims=3, axis=3)
+        # theta_r, phi_r: [num_targets, num_sources, max_num_paths]
+        theta_r, phi_r = theta_phi_from_unit_vec(k_rx)
+        # Store the results
+        paths.mask = mask
+        paths.tau = tau
+        paths.theta_t = theta_t
+        paths.phi_t = phi_t
+        paths.theta_r = theta_r
+        paths.phi_r = phi_r
+        paths_tmp.k_i = k_i
+        paths_tmp.k_r = k_r
+        paths_tmp.k_tx = k_i[0]
+        paths_tmp.k_rx = k_rx
+        paths_tmp.total_distance = total_distance
+
+        return paths, paths_tmp
 
     def _compute_directions_distances_delays_angles(self, paths, paths_tmp,
                                                     scattering):
@@ -4935,6 +5135,13 @@ class SolverPaths(SolverBase):
         # [num_rx, 1, 1/rx_array_size, num_tx, num_tx_patterns, 1/tx_array_size,
         #   max_num_paths, 2]
         a = tf.linalg.matvec(a, tx_ant_fields)
+
+        ## TODO: Refraction:
+        # For refraction, a is the field transmitted by the last interaction
+        refraction_ind = tf.where(types == Paths.REFRACTION)[:,0]
+        n_refract = tf.size(refraction_ind)
+        if n_refract > 0:
+            pass
 
         ## Scattering: For scattering, a is the field specularly reflected by
         # the last interaction point. We need to compute the scattered field.
