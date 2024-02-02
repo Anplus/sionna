@@ -643,8 +643,9 @@ class Scene:
             paths.scat_tmp = scat_tmp
 
         # Finalize paths computation
+        tmp = paths.tau
         paths.finalize()
-
+        paths.tau = tmp
         return paths
 
     def compute_paths(self, max_depth=3, method="fibonacci",

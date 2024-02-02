@@ -554,6 +554,7 @@ class Paths:
             reflection=True,
             diffraction=True,
             scattering=True,
+            refraction=True,
             num_paths=None):
         # pylint: disable=line-too-long
         r"""
@@ -623,7 +624,10 @@ class Paths:
         if scattering:
             selection_mask = tf.logical_or(selection_mask,
                                            types == Paths.SCATTERED)
-
+        # TODO: refraction cir
+        if refraction:
+            selection_mask = tf.logical_or(selection_mask,
+                                           types == Paths.REFRACTION)
         # Extract selected paths
         # [batch_size, num_rx, num_rx_ant, num_tx, num_tx_ant, max_num_paths,
         #   num_time_steps]
@@ -811,8 +815,14 @@ class Paths:
         # Add the time steps dimension
         # [1, num_rx, num_rx_ant, num_tx, num_tx_ant, max_num_paths, 1]
         self.a = tf.expand_dims(self.a, axis=-1)
-
-        # Normalize delays
+        DEBUG = False
+        if DEBUG:
+            numpy_array = tau.numpy()
+            flattened_array = numpy_array.reshape(
+                (-1, numpy_array.shape[1] * numpy_array.shape[2] * numpy_array.shape[3]))
+            file_path = 'tau.csv'
+            np.savetxt(file_path, flattened_array*1e9, delimiter=',', fmt='%f')
+            # Normalize delays
         self.normalize_delays = True
 
     def set_los_path_type(self):

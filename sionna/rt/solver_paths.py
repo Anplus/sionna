@@ -553,7 +553,7 @@ class SolverPaths(SolverBase):
             num_path = tf.shape(refraction_paths.objects)[3]
             # refraction_paths.mask = tf.fill([num_sources,num_targets,num_path], True)
             refraction_paths.targets_sources_mask = tf.fill([num_sources, num_targets, num_path], True)
-            refraction_paths.tau = tf.zeros([num_sources,num_targets,num_path], dtype=tf.dtypes.float32)
+            # refraction_paths.tau = tf.zeros([num_sources,num_targets,num_path], dtype=tf.dtypes.float32)
             refraction_paths.theta_r = tf.ones([num_sources,num_targets,num_path], dtype=tf.dtypes.float32)
 
 
@@ -3679,7 +3679,7 @@ class SolverPaths(SolverBase):
         theta = tf.math.acos(cos_theta)
         # if theta < 5 degree, then the ray will be captured by the target
         # [max_depth, num_targets, num_sources, num_paths]
-        captured = tf.greater(theta, 170.0/180.0*PI)
+        captured = tf.greater(theta, 175.0/180.0*PI)
         # [max_depth, num_targets, num_sources, num_paths]
         captured_ = tf.cast(captured, tf.int32)
         # save theta and hit_points tensor into a csv file 
@@ -4499,7 +4499,15 @@ class SolverPaths(SolverBase):
         # k_i : [max_depth + 1, num_targets, num_sources, max_num_paths, 3]
         # ray_lengths : [max_depth + 1, num_targets, num_sources, max_num_paths]
         k_i = tf.roll(vertices, -1, axis=0) - vertices
-        k_i,ray_lengths = normalize(k_i)
+        k_i, ray_lengths = normalize(k_i)
+        DEBUG = True
+        if DEBUG:
+            import numpy as np
+            numpy_array = ray_lengths.numpy()
+            numpy_array = numpy_array.reshape(
+                (-1, numpy_array.shape[1] * numpy_array.shape[2] * numpy_array.shape[3]))
+            file_path = 'ray.csv'
+            np.savetxt(file_path, numpy_array, delimiter=',', fmt='%f')
         k_i = k_i[:max_depth+1]
         ray_lengths = ray_lengths[:max_depth+1]
         # Direction of departures (k_r) at interaction points.
