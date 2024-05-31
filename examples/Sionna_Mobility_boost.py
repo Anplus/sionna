@@ -46,7 +46,7 @@ if __name__ == "__main__":
 
     scene.tx_array = PlanarArray(1, 1, 0.5, 0.5, "dipole", "V")
     scene.rx_array = scene.tx_array
-    NUM_SAMPLES_RAY = 1e4
+    NUM_SAMPLES_RAY = 1e6
     num_change = 1
     max_depth_settings = [2]
     time_consumptions = {depth: [] for depth in max_depth_settings}
@@ -54,14 +54,16 @@ if __name__ == "__main__":
     # mobility boost
     human.position = [1.52, 0.98136413, 0.8922081]
     depth = 3
-    _test = scene.compute_paths(max_depth=depth, num_samples=NUM_SAMPLES_RAY, diffraction=True, scattering=True, scat_keep_prob=0.001)
-
-    traced_paths = scene.trace_paths(max_depth=depth, num_samples=NUM_SAMPLES_RAY, diffraction=True, scattering=True, scat_keep_prob=0.001)
+    #_test = scene.compute_paths(max_depth=depth, num_samples=NUM_SAMPLES_RAY, diffraction=True, scattering=True, scat_keep_prob=0.001)
+    traced_path_static = scene.trace_paths(max_depth=depth, num_samples=NUM_SAMPLES_RAY, reflection=False,diffraction=True, scattering=False, scat_keep_prob=0.001)
+    _test = scene.compute_fields(*traced_path_static)
+    # traced_paths = scene.trace_paths(max_depth=depth, num_samples=NUM_SAMPLES_RAY, diffraction=True, scattering=True, scat_keep_prob=0.001)
     human.position += [0, 0.1, 0]
     traced_paths_moving = scene.trace_paths_moving(max_depth=2, num_samples=600, moving_objects=human,
                                             diffraction=True, scattering=True, scat_keep_prob=0.001)
     paths_moving = scene.compute_fields(*traced_paths_moving)
     # Loop over each max_depth setting
+    _test = scene.update_paths(*traced_path_static, _test, reflection=False, diffraction=True, scattering=False)
     paths_moving = paths_moving.merge_final(_test)
     for depth in max_depth_settings:
         human.position = [1.52, 0.98136413, 0.8922081]

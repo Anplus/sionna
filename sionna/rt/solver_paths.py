@@ -2432,7 +2432,7 @@ class SolverPaths(SolverBase):
                 scatter_indices_ = tf.pad(scatter_indices, [[0,0], [1,0]],
                                 mode='CONSTANT', constant_values=depth)
 
-                # Loaction of the interactions
+                # Location of the interactions
                 # Extract only the valid paths
                 # [num_targets, num_sources, num_samples, 3]
                 vertices_ = tf.gather(path_vertices, depth, axis=0)
@@ -3700,7 +3700,6 @@ class SolverPaths(SolverBase):
     ##################################################################
     # Methods used for computing the scattered paths
     ##################################################################
-
     def _scat_test_rx_blockage(self, targets, sources, candidates, hit_points):
         r"""
         Test if the LoS between the hit points and the target is blocked.
@@ -5233,3 +5232,101 @@ class SolverPaths(SolverBase):
             a = flatten_dims(flatten_dims(a, 2, 1), 2, 3)
 
         return a
+
+    def update_paths(self, spec_paths, diff_paths, scat_paths, spec_paths_tmp, diff_paths_tmp, scat_paths_tmp, cir,
+                        reflection=False, diffraction=True, scattering=False):
+        '''
+
+        Parameters
+        ----------
+        spec_paths
+        diff_paths
+        scat_paths
+        spec_paths_tmp
+        diff_paths_tmp
+        scat_paths_tmp
+        cir
+
+        Returns
+        -------
+
+        '''
+        print('remove blockage when there are moving objects')
+        sources = cir.sources
+        num_sources = sources.shape[0]
+        targets = cir.targets
+        num_targets = targets.shape[0]
+        hit_points = cir.vertices # [max_depth, num_sources, num_targets, num_paths_per_source, 3]
+        max_depth = hit_points.shape[0]
+        num_paths = hit_points.shape[-2]
+        num_spec = spec_paths.vertices.shape[-2]-1
+        num_diff = diff_paths.vertices.shape[-2]
+        num_scatter = scat_paths.vertices.shape[-2]
+        #####################################
+        # LOS
+        #####################################
+        ray_origins = tf.tile(sources, [num_targets, 1])
+        ray_origins = tf.reshape(ray_origins, [-1, 3])
+        ray_ends = tf.tile(sources, [num_sources, 1])
+        ray_ends = tf.reshape(ray_ends, [-1, 3])
+        ray_directions, rays_lengths = normalize(ray_ends - ray_origins)
+        blocked_ = self._test_obstruction(ray_origins, ray_directions, rays_lengths)
+        blocked_los = tf.reshape(blocked_, [num_sources, num_targets, 1])
+        blocked_los = tf.expand_dims(blocked_los, axis=0) # [max_depth, num_sources, num_targets, 1]
+        #####################################
+        # spec path blockage
+        #####################################
+        if reflection and num_spec > 0:
+            # [max_depth * num_targets * num_sources * num_paths, 3]
+            ray_origins = tf.tile(sources, [num_spec, 1])
+            spec_hitting_points = hit_points[:,:,:,1:num_spec+1,:]
+            ray_ends = tf.reshape(spec_hitting_points[0], [-1, 3])
+            # Directions
+            # [max_depth, num_targets, num_sources, num_paths, 3]
+            ray_directions, rays_lengths = normalize(ray_ends - ray_origins)
+            # Test for blockage
+            # [max_depth * num_targets * num_sources * num_paths]
+            blocked = self._test_obstruction(ray_origins, ray_directions,
+                                             rays_lengths)
+            # [num_targets, num_sources, num_paths]
+            blocked = tf.reshape(blocked, [num_targets, num_sources, -1])
+            for i in range(max_depth):
+                ray_origins = tf.reshape(spec_hitting_points[i], [-1, 3])
+                if i == max_depth-1:
+                    ray_ends = targets
+                else:
+                    ray_ends = tf.reshape(spec_hitting_points[i+1], [-1, 3])
+                ray_directions, rays_lengths = normalize(ray_ends - ray_origins)
+                blocked_ = self._test_obstruction(ray_origins, ray_directions, rays_lengths)
+                blocked = tf.math.logical_and(blocked, blocked_)
+
+            blocked_spec = tf.expand_dims(tf.math.logical_not(blocked), axis=0)
+
+        ################################################
+        # diffraction
+        ################################################
+        if diffraction and num_diff > 0:
+            # [num_source, 3] -> [num_source, num_targets, num_diff, 3]
+            sources_ = tf.expand_dims(sources, axis=1)
+            sources_ = tf.expand_dims(sources_, axis=1)
+            targets_ = tf.expand_dims(targets, axis=1)
+            targets_ = tf.expand_dims(targets_, axis=1)
+            ray_middle = diff_paths.vertices[0]
+            ray_origins_1 = tf.tile(sources_, [1, num_targets, num_diff, 1])
+            ray_origins_1 = tf.reshape(ray_origins_1, [-1, 3])
+            ray_ends_1 = tf.reshape(ray_middle, [-1, 3])
+            ray_directions, rays_lengths = normalize(ray_ends_1 - ray_origins_1)
+            blocked_1 = self._test_obstruction(ray_origins_1, ray_directions, rays_lengths)
+            ray_origins_2 = ray_ends_1
+            ray_ends_2 = tf.tile(targets_, [1, num_targets, num_diff, 1])
+            ray_ends_2 = tf.reshape(ray_ends_2, [-1, 3])
+            ray_directions, rays_lengths = normalize(ray_ends_2 - ray_origins_2)
+            blocked_2 = self._test_obstruction(ray_origins_2, ray_directions, rays_lengths)
+            blocked_ = tf.math.logical_and(blocked_1, blocked_2)
+            blocked_diff_ = tf.reshape(blocked_, [num_sources, num_targets, num_diff])
+            blocked_diff = tf.expand_dims(blocked_diff_, axis=0)
+
+        blocked = tf.concat([blocked_los, blocked_diff], axis=-1)
+        # combine all blockage flag and filter out the paths
+
+        return cir
