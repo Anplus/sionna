@@ -569,9 +569,8 @@ class Scene:
                                                scattering=scattering,
                                                scat_keep_prob=scat_keep_prob,
                                                edge_diffraction=edge_diffraction, 
-                                               moving_objects=moving_objects,
-                                               traced_paths=traced_paths)
-        
+                                               moving_objects=moving_objects)
+        return paths
 
     def compute_fields(self, spec_paths, diff_paths, scat_paths,
                        spec_paths_tmp, diff_paths_tmp, scat_paths_tmp,

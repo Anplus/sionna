@@ -351,7 +351,7 @@ class SolverPaths(SolverBase):
     """
 
     def trace_paths_moving(self, max_depth, method, num_samples, los, reflection,
-                 diffraction, scattering, scat_keep_prob, edge_diffraction, moving_objects=1, traced_paths=[]):
+                 diffraction, scattering, scat_keep_prob, edge_diffraction, moving_objects=1):
         # pylint: disable=line-too-long
         scat_keep_prob = tf.cast(scat_keep_prob, self._rdtype)
         # Disable scattering if the probability of keeping a path is 0
@@ -417,7 +417,7 @@ class SolverPaths(SolverBase):
         candidates_scat = output[2]
         hit_points = output[3]
         ##############################################
-        # LoS and Specular paths combination
+        # LoS and Specular paths
         ##############################################
         spec_paths = Paths(sources=sources, targets=targets, scene=self._scene,
                            types=Paths.SPECULAR)
@@ -431,10 +431,102 @@ class SolverPaths(SolverBase):
             # Compute paths length, delays, angles and directions of arrivals
             # and departures for the specular paths
             spec_paths, spec_paths_tmp =\
-            self._compute_directions_distances_delays_angles(spec_paths,
+                self._compute_directions_distances_delays_angles(spec_paths,
                                                         spec_paths_tmp, False)
 
-        pass
+        ############################################
+        # Diffracted paths
+        ############################################
+        diff_paths = Paths(sources=sources, targets=targets, scene=self._scene,
+                           types=Paths.DIFFRACTED)
+        diff_paths_tmp = PathsTmpData(sources, targets, self._dtype)
+        if (los_prim is not None) and diffraction:
+
+            # Get the candidate wedges for diffraction
+            # Note: Only one-order diffraction is supported. Therefore, we
+            # restrict the candidate wedges to the ones of primitives in
+            # line-of-sight with the transmitter
+            # candidate_wedges : [num_candidate_wedges], int
+            #     Candidate wedges indices
+            diff_wedges_indices = self._wedges_from_primitives(los_prim,
+                                                               edge_diffraction)
+
+            # Discard paths for which at least one of the transmitter or
+            # receiver is inside the wedge.
+            # diff_wedges_indices : [num_targets, num_sources, max_num_paths]
+            #   Indices of the intersected wedges
+            diff_wedges_indices = self._discard_obstructing_wedges_and_corners(
+                                                diff_wedges_indices, targets,
+                                                sources)
+
+            # Compute the intersection points with the wedges, and discard paths
+            # for which the intersection point is not on the finite wedge.
+            # diff_wedges_indices : [num_targets, num_sources, max_num_paths]
+            #   Indices of the intersected wedges
+            # diff_vertices : [num_targets, num_sources, max_num_paths, 3]
+            #   Position of the intersection point on the wedges
+            diff_wedges_indices, diff_vertices =\
+                self._compute_diffraction_points(targets, sources,
+                                                 diff_wedges_indices)
+
+
+            # Discard obstructed diffracted paths
+            # Only check for wedge visibility if there is at least one candidate
+            # diffracted path
+            if diff_wedges_indices.shape[2] > 0: # Number of diff. paths > 0
+                # Discard obstructed paths
+                diff_wedges_indices, diff_vertices =\
+                    self._check_wedges_visibility(targets, sources,
+                                                  diff_wedges_indices,
+                                                  diff_vertices)
+
+            diff_paths = Paths(sources=sources, targets=targets,
+                               scene=self._scene, types=Paths.DIFFRACTED)
+            diff_paths.objects = tf.expand_dims(diff_wedges_indices, axis=0)
+            diff_paths.vertices = tf.expand_dims(diff_vertices, axis=0)
+
+            # Select only the valid paths
+            diff_paths = self._gather_valid_diff_paths(diff_paths)
+
+            # Computes paths length, delays, angles and directions of arrivals
+            # and departures for the specular paths
+            diff_paths, diff_paths_tmp =\
+                self._compute_directions_distances_delays_angles(diff_paths,
+                                                        diff_paths_tmp, False)
+
+        ############################################
+        # Scattered paths
+        ############################################
+        scat_paths = Paths(sources=sources, targets=targets, scene=self._scene,
+                           types=Paths.SCATTERED)
+        scat_paths_tmp = PathsTmpData(sources, targets, self._dtype)
+        if scattering and tf.shape(candidates_scat)[0] > 0:
+
+            scat_paths, scat_paths_tmp = self._scat_test_rx_blockage(targets,sources,
+                                                                candidates_scat,
+                                                                hit_points)
+            scat_paths, scat_paths_tmp =\
+                self._compute_directions_distances_delays_angles(scat_paths,
+                                                                 scat_paths_tmp,
+                                                                 True)
+
+            scat_paths, scat_paths_tmp =\
+                self._scat_discard_crossing_paths(scat_paths, scat_paths_tmp,
+                                                  scat_keep_prob)
+
+            # Extract the valid prefixes as paths
+            scat_paths, scat_paths_tmp = self._scat_prefixes_2_paths(scat_paths,
+                                                                scat_paths_tmp)
+        # Additional data required to compute the field
+        spec_paths_tmp.num_samples = num_samples
+        spec_paths_tmp.scat_keep_prob = tf.cast(scat_keep_prob, self._rdtype)
+        diff_paths_tmp.num_samples = num_samples
+        diff_paths_tmp.scat_keep_prob = tf.cast(scat_keep_prob, self._rdtype)
+        scat_paths_tmp.num_samples = num_samples
+        scat_paths_tmp.scat_keep_prob = tf.cast(scat_keep_prob, self._rdtype)
+
+        return spec_paths, diff_paths, scat_paths, spec_paths_tmp,\
+            diff_paths_tmp, scat_paths_tmp
 
 
     def trace_paths(self, max_depth, method, num_samples, los, reflection,
@@ -1187,7 +1279,6 @@ class SolverPaths(SolverBase):
         num_sources = sources.shape[0]
         samples_per_source = int(dr.ceil(num_samples / num_sources))
         num_samples = num_sources * samples_per_source
-
         # List of candidates
         candidates = []
 
@@ -3785,7 +3876,7 @@ class SolverPaths(SolverBase):
         # [max_depth, num_targets, num_sources, max_num_paths]
         objects = tf.gather(primitives_2_objects, opt_candidates_)
 
-        # Create and return the the objects storing the scattered paths
+        # Create and return the objects storing the scattered paths
         paths = Paths(sources=sources,
                       targets=targets,
                       scene=self._scene,

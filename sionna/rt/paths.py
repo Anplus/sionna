@@ -818,6 +818,73 @@ class Paths:
 
         return self
 
+    def merge_final(self, more_paths):
+        r"""
+        Merge ``more_paths`` after all computations with the current paths and returns the so-obtained
+        instance. `self` is not updated.
+
+        Input
+        -----
+        more_paths : :class:`~sionna.rt.Paths`
+            First set of paths to merge
+        """
+
+        dtype = self._scene.dtype
+
+        more_vertices = more_paths.vertices
+        more_objects = more_paths.objects
+        more_types = more_paths.types
+
+        # The paths to merge must have the same number of sources and targets
+        assert more_paths.targets.shape[0] == self.targets.shape[0],\
+            "Paths to merge must have same number of targets"
+        assert more_paths.sources.shape[0] == self.sources.shape[0],\
+            "Paths to merge must have same number of targets"
+
+        # Pad the paths with the lowest depth
+        padding = self.vertices.shape[0] - more_vertices.shape[0]
+        if padding > 0:
+            more_vertices = tf.pad(more_vertices,
+                                   [[0,padding],[0,0],[0,0],[0,0],[0,0]],
+                                   constant_values=tf.zeros((),
+                                                            dtype.real_dtype))
+            more_objects = tf.pad(more_objects,
+                                  [[0,padding],[0,0],[0,0],[0,0]],
+                                  constant_values=-1)
+        elif padding < 0:
+            padding = -padding
+            self.vertices = tf.pad(self.vertices,
+                                   [[0,padding],[0,0],[0,0],[0,0],[0,0]],
+                            constant_values=tf.zeros((), dtype.real_dtype))
+            self.objects = tf.pad(self.objects,
+                                  [[0,padding],[0,0],[0,0],[0,0]],
+                                  constant_values=-1)
+
+        # Merge types
+        if tf.rank(self.types) == 0:
+            merged_types = tf.repeat(self.types, tf.shape(self.vertices)[3])
+        else:
+            merged_types = self.types
+        if tf.rank(more_types) == 0:
+            more_types = tf.repeat(more_types, tf.shape(more_vertices)[3])
+
+        self.types = tf.concat([merged_types, more_types], axis=1)
+
+        # Concatenate all
+        self.a = tf.concat([self.a, more_paths.a], axis=-2)
+        self.tau = tf.concat([self.tau, more_paths.tau], axis=-1)
+        self.theta_t = tf.concat([self.theta_t, more_paths.theta_t], axis=-1)
+        self.phi_t = tf.concat([self.phi_t, more_paths.phi_t], axis=-1)
+        self.theta_r = tf.concat([self.theta_r, more_paths.theta_r], axis=-1)
+        self.phi_r = tf.concat([self.phi_r, more_paths.phi_r], axis=-1)
+        self.mask = tf.concat([self.mask, more_paths.mask], axis=-1)
+        self.vertices = tf.concat([self.vertices, more_vertices], axis=-2)
+        self.objects = tf.concat([self.objects, more_objects], axis=-1)
+        self.doppler = tf.concat([self.doppler, more_paths.doppler], axis=-1)
+
+        return self
+
+
     def finalize(self):
         """
         This function must be called to finalize the creation of the paths.
