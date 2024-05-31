@@ -350,6 +350,92 @@ class SolverPaths(SolverBase):
         The computed paths.
     """
 
+    def trace_paths_moving(self, max_depth, method, num_samples, los, reflection,
+                 diffraction, scattering, scat_keep_prob, edge_diffraction, moving_objects=1, traced_paths=[]):
+        # pylint: disable=line-too-long
+        scat_keep_prob = tf.cast(scat_keep_prob, self._rdtype)
+        # Disable scattering if the probability of keeping a path is 0
+        scattering = tf.logical_and(scattering,
+                    tf.greater(scat_keep_prob, tf.zeros_like(scat_keep_prob)))
+        # If reflection and scattering are disabled, no need for a max_depth
+        # higher than 1.
+        # This clipping can save some compute for the shoot-and-bounce
+        if (not reflection) and (not scattering):
+            max_depth = tf.minimum(max_depth, 1)
+
+        # Rotation matrices corresponding to the orientations of the radio
+        # devices
+        # rx_rot_mat : [num_rx, 3, 3]
+        # tx_rot_mat : [num_tx, 3, 3]
+        rx_rot_mat, tx_rot_mat = self._get_tx_rx_rotation_matrices()
+
+        #################################################
+        # Prepares the sources (from which rays are shot)
+        # and targets (which capture the rays)
+        #################################################
+
+        if not self._scene.synthetic_array:
+            # Relative positions of the antennas of the transmitters and
+            # receivers
+            # rx_rel_ant_pos: [num_rx, rx_array_size, 3], tf.float
+            #     Relative positions of the receivers antennas
+            # tx_rel_ant_pos: [num_tx, rx_array_size, 3], tf.float
+            #     Relative positions of the transmitters antennas
+            rx_rel_ant_pos, tx_rel_ant_pos =\
+                self._get_antennas_relative_positions(rx_rot_mat, tx_rot_mat)
+
+        # Transmitters and receivers positions
+        # [num_tx, 3]
+        tx_pos = [tx.position for tx in self._scene.transmitters.values()]
+        tx_pos = tf.stack(tx_pos, axis=0)
+        # [num_rx, 3]
+        rx_pos = [rx.position for rx in self._scene.receivers.values()]
+        rx_pos = tf.stack(rx_pos, axis=0)
+
+        if self._scene.synthetic_array:
+            # With synthetic arrays, each radio device corresponds to a single
+            # endpoint (source or target)
+            # [num_sources = num_tx, 3]
+            sources = tx_pos
+            # [num_targets = num_rx, 3]
+            targets = rx_pos
+        else:
+            # [num_tx, tx_array_size, 3]
+            sources = tf.expand_dims(tx_pos, axis=1) + tx_rel_ant_pos
+            # [num_sources = num_tx*tx_array_size, 3]
+            sources = tf.reshape(sources, [-1, 3])
+            # [num_rx, rx_array_size, 3]
+            targets = tf.expand_dims(rx_pos, axis=1) + rx_rel_ant_pos
+            # [num_targets = num_rx*rx_array_size, 3]
+            targets = tf.reshape(targets, [-1, 3])
+
+        output = self._list_candidates_fibonacci_moving_objects(max_depth,
+                                                 sources, num_samples, los, reflection,
+                                                 scattering, moving_objects=moving_objects)
+        candidates = output[0]
+        los_prim = output[1]
+        candidates_scat = output[2]
+        hit_points = output[3]
+        ##############################################
+        # LoS and Specular paths combination
+        ##############################################
+        spec_paths = Paths(sources=sources, targets=targets, scene=self._scene,
+                           types=Paths.SPECULAR)
+        spec_paths_tmp = PathsTmpData(sources, targets, self._dtype)
+        if los or reflection:
+
+            # Using the image method, computes the non-obstructed specular paths
+            # interacting with the ``candidates`` primitives
+            self._spec_image_method(candidates, spec_paths, spec_paths_tmp)
+
+            # Compute paths length, delays, angles and directions of arrivals
+            # and departures for the specular paths
+            spec_paths, spec_paths_tmp =\
+            self._compute_directions_distances_delays_angles(spec_paths,
+                                                        spec_paths_tmp, False)
+
+        pass
+
 
     def trace_paths(self, max_depth, method, num_samples, los, reflection,
                  diffraction, scattering, scat_keep_prob, edge_diffraction):
@@ -1092,6 +1178,261 @@ class SolverPaths(SolverBase):
             los_candidates = None
 
         return all_candidates, los_candidates
+
+    def _list_candidates_fibonacci_moving_objects(self, max_depth, sources, num_samples,
+                                   los, reflection, scattering, moving_objects):
+        mask_t = dr.mask_t(self._mi_scalar_t)
+
+        # Ensure that sample count can be distributed over the emitters
+        num_sources = sources.shape[0]
+        samples_per_source = int(dr.ceil(num_samples / num_sources))
+        num_samples = num_sources * samples_per_source
+
+        # List of candidates
+        candidates = []
+
+        # Hit points
+        hit_points = []
+
+        # Is the scene empty?
+        is_empty = dr.shape(self._shape_indices)[0] == 0
+
+        # Only shoot if the scene is not empty
+        if not is_empty:
+
+            # Keep track of which paths are still active
+            active = dr.full(mask_t, True, num_samples)
+
+            # Initial ray: Arranged in a Fibonacci lattice on the unit
+            # sphere.
+            # [samples_per_source, 3]
+            moving_object_mesh = moving_objects._mi_shape
+            mesh_points = self._sample_points_on_mesh(moving_object_mesh, samples_per_source)
+            source_i = dr.linspace(self._mi_scalar_t, 0, num_sources,
+                                   num=num_samples, endpoint=False)
+            source_i = mi.Int32(source_i)
+            sources_dr = self._mi_tensor_t(sources)
+            sampled_o = dr.gather(self._mi_vec_t, sources_dr.array, source_i)
+            sampled_d = self._mi_vec_t(mesh_points) - sampled_o
+            ray = mi.Ray3f(
+                o=sampled_o,
+                d=sampled_d,
+            )
+            for depth in range(max_depth):
+
+                # Intersect ray against the scene to find the next hitted
+                # primitive
+                si = self._mi_scene.ray_intersect(ray, active)
+
+                active &= si.is_valid()
+
+                # Record which primitives were hit
+                shape_i = dr.gather(mi.Int32, self._shape_indices,
+                                    dr.reinterpret_array_v(mi.UInt32, si.shape),
+                                    active)
+                offsets = dr.gather(mi.Int32, self._prim_offsets, shape_i,
+                                    active)
+                prims_i = dr.select(active, offsets + si.prim_index, -1)
+                candidates.append(prims_i)
+
+                # Record the hit point
+                hit_p = ray.o + si.t*ray.d
+                hit_points.append(hit_p)
+
+                # Prepare the next interaction, assuming purely specular
+                # reflection
+                ray = si.spawn_ray(si.to_world(mi.reflect(si.wi)))
+
+        # For diffraction, we need only primitives in LoS
+        # [num_los_primitives]
+        if len(candidates) > 0:
+            # max_depth > 0 or empty scene
+            los_primitives = tf.reshape(tf.cast(candidates[0], tf.int32), [-1])
+            los_primitives,_ = tf.unique(los_primitives)
+            los_primitives = tf.gather(los_primitives,
+                                       tf.where(los_primitives != -1)[:,0])
+        else:
+            # max_depth == 0
+            los_primitives = None
+
+        reflection = reflection and (max_depth > 0) and (len(candidates) > 0)
+        scattering = scattering and (max_depth > 0) and (len(candidates) > 0)
+
+        if scattering or reflection:
+            # Stack all found interactions along the depth dimension
+            # [max_depth, num_samples]
+            candidates = tf.stack([mi_to_tf_tensor(r, tf.int32)
+                                for r in candidates], axis=0)
+
+        if reflection:
+            # [max_depth, num_samples]
+            candidates_ref = candidates
+            # Compute the actual max_depth
+            # [max_depth]
+            useless_step = tf.reduce_all(tf.equal(candidates_ref, -1), axis=1)
+            # ()
+            max_depth_ref = tf.where(tf.reduce_any(useless_step),
+                                     tf.argmax(tf.cast(useless_step, tf.int32),
+                                        output_type=tf.int32),
+                                     max_depth)
+            # [max_depth, num_samples]
+            candidates_ref = candidates_ref[:max_depth_ref]
+        else:
+            # No candidates
+            candidates_ref = tf.fill([0, 0], -1)
+            max_depth_ref = 0
+
+        if scattering:
+            # [max_depth, num_samples, 3]
+            hit_points = tf.stack([mi_to_tf_tensor(r, self._rdtype)
+                                for r in hit_points])
+            # [max_depth, num_sources, samples_per_source, 3]
+            hit_points = tf.reshape(hit_points,
+                        [max_depth, num_sources, samples_per_source, 3])
+            # [max_depth, num_sources, samples_per_source]
+            candidates_scat = tf.reshape(candidates,
+                                [max_depth, num_sources, samples_per_source])
+            # Flag indicating no hits
+            # [max_depth, num_sources, samples_per_source]
+            no_hit = tf.equal(candidates_scat, -1)
+            # Compute the actual max_depth
+            # [max_depth]
+            useless_step = tf.reduce_all(no_hit, axis=(1,2))
+            # ()
+            max_depth_scat = tf.where(tf.reduce_any(useless_step),
+                                      tf.argmax(tf.cast(useless_step, tf.int32),
+                                        output_type=tf.int32),
+                                    max_depth)
+            # [max_depth, num_sources, samples_per_source, 3]
+            hit_points = hit_points[:max_depth_scat]
+            # [max_depth, num_sources, samples_per_source]
+            candidates_scat = candidates_scat[:max_depth_scat]
+            # [max_depth, num_sources, samples_per_source]
+            no_hit = no_hit[:max_depth_scat]
+            # Remove useless paths
+            # [samples_per_source]
+            useful_samples = tf.logical_not(tf.reduce_all(no_hit, axis=(0,1)))
+            useful_samples_index = tf.where(useful_samples)[:,0]
+            # [max_depth, num_sources, num_paths_per_source, 3]
+            hit_points = tf.gather(hit_points, useful_samples_index, axis=2)
+            # [max_depth, num_sources, num_paths_per_source]
+            candidates_scat = tf.gather(candidates_scat, useful_samples_index,
+                                        axis=2)
+            # [max_depth, num_sources, num_paths_per_source]
+            no_hit = tf.gather(no_hit, useful_samples_index, axis=2)
+
+            # Zero the hit masked points
+            # [max_depth, num_sources, num_paths, 3]
+            hit_points = tf.where(tf.expand_dims(no_hit, axis=-1),
+                                tf.zeros_like(hit_points),
+                                hit_points)
+        else:
+            # No hit points
+            hit_points = tf.fill([0, num_sources, 1, 3],
+                                 tf.cast(0., self._rdtype))
+            candidates_scat = tf.fill([0, num_sources, 1], False)
+            max_depth_scat = 0
+
+        if ((not reflection) and (not scattering)):
+            max_depth = 0
+
+        # Remove duplicates
+        if max_depth_ref > 0:
+            candidates_ref, _ = tf.raw_ops.UniqueV2(
+                x=candidates_ref,
+                axis=[1]
+            )
+
+        # Add line-of-sight to list of candidates for reflection if
+        # required
+        if los:
+            candidates_ref = tf.concat([tf.fill([max_depth_ref, 1], -1),
+                                        candidates_ref],
+                                       axis=1)
+        else:
+            # Ensure there is no LoS by removing all paths corresponding
+            # to no hits
+            # [num_samples]
+            is_nlos = tf.logical_not(tf.reduce_all(candidates_ref == -1,
+                                                   axis=0))
+            is_nlos_ind = tf.where(is_nlos)[:,0]
+            candidates_ref = tf.gather(candidates_ref, is_nlos_ind, axis=1)
+
+        # The previous shoot and bounce process does not do next-event
+        # estimation, and continues to trace until max_depth reflections occurs
+        # or the ray does not intersect any primitive.
+        # Therefore, we extend the set of rays with the prefixes of all
+        # rays in `results_tf` to ensure we don't miss shorter paths than the
+        # ones found.
+        candidates_ref_ = [candidates_ref]
+        for depth in range(1, max_depth_ref):
+            # Extract prefix of length depth
+            # [depth, num_samples]
+            prefix = candidates_ref[:depth]
+            # Pad with -1, i.e., not intersection
+            # [max_depth, num_samples]
+            prefix = tf.pad(prefix, [[0, max_depth_ref-depth], [0,0]],
+                            constant_values=-1)
+            # Add to the list of rays
+            candidates_ref_.insert(0, prefix)
+        # [max_depth, num_samples]
+        candidates_ref = tf.concat(candidates_ref_, axis=1)
+
+        # Extending the rays with prefixes might have created duplicates.
+        # Remove duplicates
+        if candidates_ref.shape[0] > 0:
+            candidates_ref, _ = tf.raw_ops.UniqueV2(
+                x=candidates_ref,
+                axis=[1]
+            )
+
+        return candidates_ref, los_primitives, candidates_scat, hit_points
+
+
+    def _sample_points_on_mesh(self, mesh, num_samples):
+        # Sample points on the mesh surface
+        bbox = mesh.bbox()
+        import numpy as np
+        # Generate samples on the bounding box surface using NumPy
+        min_pt = bbox.min.numpy()
+        max_pt = bbox.max.numpy()
+
+        # Random face selection
+        faces = np.random.randint(0, 6, size=num_samples)
+
+        # Uniform sampling coordinates
+        u = np.random.rand(num_samples)
+        v = np.random.rand(num_samples)
+
+        # Initialize points array
+        points = np.zeros((num_samples, 3))
+
+        # Calculate points for each face using vectorized operations
+        points[faces == 0] = np.column_stack([np.full(np.sum(faces == 0), min_pt[0]),
+                                              u[faces == 0] * (max_pt[1] - min_pt[1]) + min_pt[1],
+                                              v[faces == 0] * (max_pt[2] - min_pt[2]) + min_pt[2]])
+
+        points[faces == 1] = np.column_stack([np.full(np.sum(faces == 1), max_pt[0]),
+                                              u[faces == 1] * (max_pt[1] - min_pt[1]) + min_pt[1],
+                                              v[faces == 1] * (max_pt[2] - min_pt[2]) + min_pt[2]])
+
+        points[faces == 2] = np.column_stack([u[faces == 2] * (max_pt[0] - min_pt[0]) + min_pt[0],
+                                              np.full(np.sum(faces == 2), min_pt[1]),
+                                              v[faces == 2] * (max_pt[2] - min_pt[2]) + min_pt[2]])
+
+        points[faces == 3] = np.column_stack([u[faces == 3] * (max_pt[0] - min_pt[0]) + min_pt[0],
+                                              np.full(np.sum(faces == 3), max_pt[1]),
+                                              v[faces == 3] * (max_pt[2] - min_pt[2]) + min_pt[2]])
+
+        points[faces == 4] = np.column_stack([u[faces == 4] * (max_pt[0] - min_pt[0]) + min_pt[0],
+                                              v[faces == 4] * (max_pt[1] - min_pt[1]) + min_pt[1],
+                                              np.full(np.sum(faces == 4), min_pt[2])])
+
+        points[faces == 5] = np.column_stack([u[faces == 5] * (max_pt[0] - min_pt[0]) + min_pt[0],
+                                              v[faces == 5] * (max_pt[1] - min_pt[1]) + min_pt[1],
+                                              np.full(np.sum(faces == 5), max_pt[2])])
+
+        return points
 
     def _list_candidates_fibonacci(self, max_depth, sources, num_samples,
                                    los, reflection, scattering):

@@ -547,6 +547,32 @@ class Scene:
 
         return paths
 
+    def trace_paths_moving(self, max_depth=3, method="fibonacci", num_samples=1e6,
+                            los=True, reflection=True, diffraction=False,
+                            scattering=False, scat_keep_prob=0.001,
+                            edge_diffraction=False, check_scene=True, moving_objects=1, traced_paths=[]):
+        # pylint: disable=line-too-long
+        print('Start tracing paths with moving objects')
+        if scat_keep_prob < 0. or scat_keep_prob > 1.:
+            msg = "The parameter `scat_keep_prob` must be in the range (0,1)"
+            raise ValueError(msg)
+
+        # Check that all is set to compute paths
+        if check_scene:
+            self._check_scene(False)
+        # Trace the paths
+        paths = self._solver_paths.trace_paths_moving(max_depth,
+                                               method=method,
+                                               num_samples=num_samples,
+                                               los=los, reflection=reflection,
+                                               diffraction=diffraction,
+                                               scattering=scattering,
+                                               scat_keep_prob=scat_keep_prob,
+                                               edge_diffraction=edge_diffraction, 
+                                               moving_objects=moving_objects,
+                                               traced_paths=traced_paths)
+        
+
     def compute_fields(self, spec_paths, diff_paths, scat_paths,
                        spec_paths_tmp, diff_paths_tmp, scat_paths_tmp,
                        check_scene=True, scat_random_phases=True,
