@@ -551,7 +551,7 @@ class Scene:
                        spec_paths_tmp, diff_paths_tmp, scat_paths_tmp, cir, reflection=False, diffraction=True, scattering=False):
         output = self._solver_paths.update_paths(spec_paths, diff_paths,
                                                    scat_paths, spec_paths_tmp, diff_paths_tmp, scat_paths_tmp, cir,
-                                                 reflection=False, diffraction=True, scattering=False)
+                                                 reflection=reflection, diffraction=diffraction, scattering=scattering)
         return output
 
     def trace_paths_moving(self, max_depth=3, method="fibonacci", num_samples=1e6,

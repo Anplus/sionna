@@ -5272,10 +5272,11 @@ class SolverPaths(SolverBase):
         ray_directions, rays_lengths = normalize(ray_ends - ray_origins)
         blocked_ = self._test_obstruction(ray_origins, ray_directions, rays_lengths)
         blocked_los = tf.reshape(blocked_, [num_sources, num_targets, 1])
-        blocked_los = tf.expand_dims(blocked_los, axis=0) # [max_depth, num_sources, num_targets, 1]
+        # blocked_los = tf.expand_dims(blocked_los, axis=0) # [max_depth, num_sources, num_targets, 1]
         #####################################
         # spec path blockage
         #####################################
+        blocked_spec = tf.zeros([num_sources, num_targets, num_spec], dtype=tf.bool)
         if reflection and num_spec > 0:
             # [max_depth * num_targets * num_sources * num_paths, 3]
             ray_origins = tf.tile(sources, [num_spec, 1])
@@ -5300,11 +5301,19 @@ class SolverPaths(SolverBase):
                 blocked_ = self._test_obstruction(ray_origins, ray_directions, rays_lengths)
                 blocked = tf.math.logical_and(blocked, blocked_)
 
-            blocked_spec = tf.expand_dims(tf.math.logical_not(blocked), axis=0)
+            blocked_spec = blocked
+
+        ################################################
+        # scattering
+        ################################################
+        blocked_scatter = tf.zeros([num_sources, num_targets, num_scatter], dtype=tf.bool)
+        if scattering and num_scatter > 0:
+            pass
 
         ################################################
         # diffraction
         ################################################
+        blocked_diff = tf.zeros([num_sources, num_targets, num_diff], dtype=tf.bool)
         if diffraction and num_diff > 0:
             # [num_source, 3] -> [num_source, num_targets, num_diff, 3]
             sources_ = tf.expand_dims(sources, axis=1)
@@ -5326,7 +5335,50 @@ class SolverPaths(SolverBase):
             blocked_diff_ = tf.reshape(blocked_, [num_sources, num_targets, num_diff])
             blocked_diff = tf.expand_dims(blocked_diff_, axis=0)
 
-        blocked = tf.concat([blocked_los, blocked_diff], axis=-1)
+        blocked = tf.concat([blocked_los, blocked_spec, blocked_diff, blocked_scatter], axis=-1)
         # combine all blockage flag and filter out the paths
+        mask = tf.expand_dims(tf.math.logical_not(blocked), axis=0)
 
-        return cir
+        num_paths_valid = mask.shape[-1]
+        all_paths = Paths(sources=sources,
+                          targets=targets,
+                          scene=self._scene)
+        # a :  [batch_size, num_rx, num_rx_ant, num_tx, num_tx_ant, max_num_paths, num_time_steps]
+        mask_a = tf.expand_dims(mask, axis=-1)
+        mask_a = tf.expand_dims(mask_a, axis=1)
+        mask_a = tf.expand_dims(mask_a, axis=1)
+        a_ = tf.boolean_mask(cir.a, mask_a)
+        all_paths.a = tf.reshape(a_, [1, num_sources, 1, num_targets, 1, mask.shape[-1],1])
+        # doppler
+        doppler_ = tf.boolean_mask(cir.doppler, mask)
+        all_paths.doppler = tf.reshape(doppler_, [1, num_sources, num_targets, -1])
+        # mask
+        mask_ = tf.boolean_mask(cir.mask, mask)
+        all_paths.mask = tf.reshape(mask_, [1, num_sources, num_targets, -1])
+        # objects
+        mask_objects = tf.tile(mask, [max_depth, 1, 1, 1])
+        objects_ = tf.boolean_mask(cir.objects, mask_objects)
+        all_paths.objects = tf.reshape(objects_, [max_depth, num_sources, num_targets, -1])
+        # phi_r
+        phi_r_ = tf.boolean_mask(cir.phi_r, mask)
+        all_paths.phi_r = tf.reshape(phi_r_, [1, num_sources, num_targets, -1])
+        # phi_t
+        phi_t_ = tf.boolean_mask(cir.phi_t, mask)
+        all_paths.phi_t = tf.reshape(phi_t_, [1, num_sources, num_targets, -1])
+        # tau
+        tau_ = tf.boolean_mask(cir.tau, mask)
+        all_paths.tau = tf.reshape(tau_, [1, num_sources, num_targets, -1])
+        # theta_r
+        theta_r_ = tf.boolean_mask(cir.theta_r, mask)
+        all_paths.theta_r = tf.reshape(theta_r_, [1, num_sources, num_targets, -1])
+        # theta_t
+        theta_t_ = tf.boolean_mask(cir.theta_t, mask)
+        all_paths.theta_t = tf.reshape(theta_t_, [1, num_sources, num_targets, -1])
+        # types
+        mask_types = tf.reshape(mask[:,0,0:], [1, -1])
+        types_ = tf.boolean_mask(cir.types, mask_types)
+        all_paths.types = tf.reshape(types_, [1, -1])
+        # vertices
+        vertices_ = tf.boolean_mask(cir.vertices, mask_objects)
+        all_paths.vertices = tf.reshape(vertices_, [max_depth, num_sources, num_targets, num_paths_valid, 3])
+        return all_paths
