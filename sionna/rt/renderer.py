@@ -275,7 +275,7 @@ def results_to_mitsuba_scene(scene, paths, show_paths, show_devices,
 
     # --- Radio devices, shown as spheres
     if show_devices:
-        radius = max(0.0025 * sc, 1)
+        radius = max(0.0025 * sc, 0.1)
         for source, color in ((tx_positions, transmitter_colors),
                               (rx_positions, receiver_colors)):
             for index, (k, p) in enumerate(source.items()):

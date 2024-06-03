@@ -828,7 +828,8 @@ class Paths:
         more_paths : :class:`~sionna.rt.Paths`
             First set of paths to merge
         """
-
+        self.normalize_delays = False
+        more_paths.normalize_delays = False
         dtype = self._scene.dtype
 
         more_vertices = more_paths.vertices
@@ -881,7 +882,10 @@ class Paths:
         self.vertices = tf.concat([self.vertices, more_vertices], axis=-2)
         self.objects = tf.concat([self.objects, more_objects], axis=-1)
         self.doppler = tf.concat([self.doppler, more_paths.doppler], axis=-1)
-
+        self.targets_sources_mask = tf.concat([self.targets_sources_mask, more_paths.targets_sources_mask], axis=-1)
+        # # Normalize delays
+        # self.normalize_delays = True
+        self._min_tau = tf.reduce_min(tf.concat([self._min_tau, more_paths._min_tau], axis=-1), axis=-1)
         return self
 
 

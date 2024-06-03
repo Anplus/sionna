@@ -5251,6 +5251,7 @@ class SolverPaths(SolverBase):
         -------
 
         '''
+        cir.normalize_delays = False
         print('remove blockage when there are moving objects')
         sources = cir.sources
         num_sources = sources.shape[0]
@@ -5267,7 +5268,7 @@ class SolverPaths(SolverBase):
         #####################################
         ray_origins = tf.tile(sources, [num_targets, 1])
         ray_origins = tf.reshape(ray_origins, [-1, 3])
-        ray_ends = tf.tile(sources, [num_sources, 1])
+        ray_ends = tf.tile(targets, [num_sources, 1])
         ray_ends = tf.reshape(ray_ends, [-1, 3])
         ray_directions, rays_lengths = normalize(ray_ends - ray_origins)
         blocked_ = self._test_obstruction(ray_origins, ray_directions, rays_lengths)
@@ -5280,7 +5281,7 @@ class SolverPaths(SolverBase):
         if reflection and num_spec > 0:
             # [max_depth * num_targets * num_sources * num_paths, 3]
             ray_origins = tf.tile(sources, [num_spec, 1])
-            spec_hitting_points = hit_points[:,:,:,1:num_spec+1,:]
+            spec_hitting_points = hit_points[:, :, :, 1:num_spec+1, :]
             ray_ends = tf.reshape(spec_hitting_points[0], [-1, 3])
             # Directions
             # [max_depth, num_targets, num_sources, num_paths, 3]
@@ -5332,14 +5333,13 @@ class SolverPaths(SolverBase):
             ray_directions, rays_lengths = normalize(ray_ends_2 - ray_origins_2)
             blocked_2 = self._test_obstruction(ray_origins_2, ray_directions, rays_lengths)
             blocked_ = tf.math.logical_and(blocked_1, blocked_2)
-            blocked_diff_ = tf.reshape(blocked_, [num_sources, num_targets, num_diff])
-            blocked_diff = tf.expand_dims(blocked_diff_, axis=0)
+            blocked_diff = tf.reshape(blocked_, [num_sources, num_targets, num_diff])
 
         blocked = tf.concat([blocked_los, blocked_spec, blocked_diff, blocked_scatter], axis=-1)
         # combine all blockage flag and filter out the paths
         mask = tf.expand_dims(tf.math.logical_not(blocked), axis=0)
-
-        num_paths_valid = mask.shape[-1]
+        num_paths_valid = tf.reduce_sum(tf.cast(mask, tf.int32))
+        # num_paths_valid = mask.shape[-1]
         all_paths = Paths(sources=sources,
                           targets=targets,
                           scene=self._scene)
@@ -5348,7 +5348,7 @@ class SolverPaths(SolverBase):
         mask_a = tf.expand_dims(mask_a, axis=1)
         mask_a = tf.expand_dims(mask_a, axis=1)
         a_ = tf.boolean_mask(cir.a, mask_a)
-        all_paths.a = tf.reshape(a_, [1, num_sources, 1, num_targets, 1, mask.shape[-1],1])
+        all_paths.a = tf.reshape(a_, [1, num_sources, 1, num_targets, 1, num_paths_valid,1])
         # doppler
         doppler_ = tf.boolean_mask(cir.doppler, mask)
         all_paths.doppler = tf.reshape(doppler_, [1, num_sources, num_targets, -1])
@@ -5381,4 +5381,24 @@ class SolverPaths(SolverBase):
         # vertices
         vertices_ = tf.boolean_mask(cir.vertices, mask_objects)
         all_paths.vertices = tf.reshape(vertices_, [max_depth, num_sources, num_targets, num_paths_valid, 3])
+
+        all_paths.targets_sources_mask = tf.squeeze(all_paths.mask, axis=0)
+
+        import numpy as np
+        tau = all_paths.tau
+        if tau.shape[-1] == 0: # No paths
+            all_paths._min_tau = tf.zeros_like(tau)
+        else:
+            zero = tf.zeros((), tau.dtype)
+            inf = tf.cast(np.inf, tau.dtype)
+            tau = tf.where(tau < zero, inf, tau)
+            if all_paths._scene.synthetic_array:
+                # [1, num_rx, num_tx, 1]
+                min_tau = tf.reduce_min(tau, axis=3, keepdims=True)
+            else:
+                # [1, num_rx, 1, num_tx, 1, 1]
+                min_tau = tf.reduce_min(tau, axis=(2, 4, 5), keepdims=True)
+            min_tau = tf.where(tf.math.is_inf(min_tau), zero, min_tau)
+            all_paths._min_tau = min_tau
+        all_paths.normalize_delays = True
         return all_paths
